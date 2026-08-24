@@ -1,27 +1,27 @@
 # Развёртывание 1C-Consultant
 
 Каталог содержит одну кодовую базу Go-установщика и скрипты подготовки Release.
-Текущий пакет приложения проверен только для Windows x64, поэтому генерируемый
-`manifest.json` публикует только эту платформу. Installer-бинарники собираются для
-Windows, Linux и macOS; новые платформы следует добавлять в manifest только после
-появления и проверки соответствующих пакетов приложения.
+GitHub Actions нативно собирает приложение и installer для Windows x64,
+Linux x64/ARM64 и macOS x64/ARM64. `manifest.json` содержит все пять платформ.
 
 ## Подготовка Release
 
-Требования для локальной сборки: PowerShell 7, Python 3.11 и готовый `consultant.exe`.
-GitHub Actions собирает `consultant.exe` из исходников автоматически.
+Обычный выпуск выполняет `.github/workflows/release.yml`. Пять runner’ов собирают
+PyInstaller-пакеты приложения на своих ОС. Финальный Windows job запускает `go build`
+для пяти installer-бинарников, собирает граф, manifest и общий offline bundle.
 
 ```powershell
 ./deployment/scripts/build-release.ps1 `
-  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.6.1"
+  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.7.0" `
+  -ApplicationDirectory application-packages
 ```
 
 Если Python вызывается не через `py -3`, передайте
 `-Python "C:\path\python.exe" -PythonArguments @()`.
 
-Скрипт проверяет версию приложения и репозиторий, создаёт application/graph ZIP,
-вычисляет размер и SHA-256, затем записывает `release/manifest.json`. Installer
-по умолчанию берёт manifest последнего Release; `--manifest` позволяет заменить URL.
+Нативный application ZIP создаёт `scripts/build_application.py`. Финальный скрипт
+проверяет наличие пяти пакетов, вычисляет SHA-256 и записывает manifest. Installer
+по умолчанию берёт manifest последнего Release.
 
 Для offline bundle положите `manifest.json` в корень, application ZIP — в
 `application/`, graph ZIP — в `graphs/`, installer-бинарники — в `installer/`.
@@ -38,7 +38,17 @@ GitHub Actions собирает `consultant.exe` из исходников ав�
 и создаёт `SHA256SUMS`. Подпись Windows-кода и Apple notarization выполняются после
 сборки корпоративными средствами: ключи и сертификаты в проект не включаются.
 
-## Использование
+## Использование без команд
+
+Откройте installer своей ОС. Без аргументов появляется меню установки, обновления,
+проверки версий, отката и удаления. В меню можно выбрать интернет или offline bundle.
+URL manifest и параметры командной строки обычному пользователю не нужны.
+
+Для двойного клика скачайте `1c-consultant-setup-<ОС>-<архитектура>.zip`.
+Windows запускает `.cmd`, macOS — `.command`, Linux — `.sh`. На Linux окружение
+рабочего стола может один раз запросить разрешение на запуск файла.
+
+## Автоматизация
 
 ```powershell
 # Online

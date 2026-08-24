@@ -1,9 +1,9 @@
 {
   "package": "1C-Consultant-Portable",
-  "application_version": "0.6.1",
-  "created_at": "2026-08-18",
-  "target_os": "Windows 10/11",
-  "runtime": "standalone consultant.exe",
+  "application_version": "0.7.0",
+  "created_at": "2026-08-24",
+  "target_os": "Windows, Linux, macOS; x64 and arm64",
+  "runtime": "standalone native executable",
   "python_for_source_development": ">=3.11",
   "configuration_pack": {
     "product": "1С:ERP Управление предприятием 2",

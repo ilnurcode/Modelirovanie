@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Application version from PACKAGE_MANIFEST.json (for example 0.5.0)"
+        description: "Application version from PACKAGE_MANIFEST.json"
         required: true
         type: string
 
@@ -19,7 +19,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build-application:
+    name: application ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            arch: x64
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build native application package
+        shell: bash
+        run: |
+          python -m pip install pyinstaller
+          version="$(python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["application_version"])')"
+          python scripts/build_application.py \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --output "application-packages/1c-consultant-${version}-${{ matrix.platform }}-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: application-${{ matrix.platform }}-${{ matrix.arch }}
+          path: application-packages/*.zip
+          if-no-files-found: error
+
   release:
+    needs: build-application
     runs-on: windows-latest
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
@@ -37,6 +83,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: application-*
+          path: application-packages
+          merge-multiple: true
+
       - name: Verify version and repository
         shell: pwsh
         run: |
@@ -49,26 +101,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Repository validation failed." }
           "VERSION=$($package.application_version)" >> $env:GITHUB_ENV
 
-      - name: Build Windows application
-        shell: pwsh
-        run: |
-          python -m pip install pyinstaller
-          ./scripts/build_windows.ps1 -Python python
-          Copy-Item -LiteralPath dist/consultant.exe -Destination consultant.exe -Force
-
-      - name: Build application, graph and manifest
+      - name: Build application manifests and graph
         shell: pwsh
         run: |
           $baseUrl = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG"
           ./deployment/scripts/build-release.ps1 `
             -BaseUrl $baseUrl `
+            -ApplicationDirectory application-packages `
             -OutputDirectory release `
             -Python python `
             -PythonArguments @()
 
       - name: Build installer binaries
         shell: pwsh
-        run: ./deployment/scripts/build-installers.ps1 -OutputDirectory release
+        run: |
+          ./deployment/scripts/build-installers.ps1 -OutputDirectory release
+          python deployment/scripts/package_installers.py release
 
       - name: Build offline bundle
         shell: pwsh
@@ -81,7 +129,9 @@ jobs:
           Copy-Item -LiteralPath release/manifest.json -Destination $bundle
           Get-ChildItem -LiteralPath release -Filter "1c-consultant-installer-*" -File |
             Copy-Item -Destination (Join-Path $bundle "installer")
-          Get-ChildItem -LiteralPath release -Filter "1c-consultant-$env:VERSION-windows-x64.zip" -File |
+          Get-ChildItem -LiteralPath release -Filter "1c-consultant-setup-*" -File |
+            Copy-Item -Destination (Join-Path $bundle "installer")
+          Get-ChildItem -LiteralPath release -Filter "1c-consultant-$env:VERSION-*.zip" -File |
             Copy-Item -Destination (Join-Path $bundle "application")
           Get-ChildItem -LiteralPath release -Filter "erp-*-graph-*.zip" -File |
             Copy-Item -Destination (Join-Path $bundle "graphs")

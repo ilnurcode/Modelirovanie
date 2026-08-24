@@ -6,6 +6,8 @@ __pycache__/
 /local/
 /build/
 /dist/
+/application-packages/
+/release/
 /.venv/
 /consultant.local.toml
 /*.spec

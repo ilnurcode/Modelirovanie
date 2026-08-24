@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	installerVersion = "0.2.0"
+	installerVersion = "0.3.0"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -139,22 +139,16 @@ func usage() {
 func menu() error {
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("\nУстановка 1C-Consultant\n1. Установить или обновить\n2. Показать версии\n3. Проверить обновления\n4. Откатить приложение\n5. Удалить граф\n6. Удалить 1C-Consultant\n0. Выход\n> ")
+		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Удалить граф\n6. Удалить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
 		if !in.Scan() { return in.Err() }
 		choice := strings.TrimSpace(in.Text())
 		switch choice {
 		case "0": return nil
-		case "1", "3":
-			fmt.Print("Manifest URL, путь к offline bundle или Enter для GitHub Release: ")
-			if !in.Scan() { return in.Err() }
-			source := strings.TrimSpace(in.Text())
-			args := []string{}
-			if strings.TrimSpace(source) != "" && strings.HasPrefix(strings.TrimSpace(source), "http") { args = append(args, "--manifest", source) }
-			if strings.TrimSpace(source) != "" && !strings.HasPrefix(strings.TrimSpace(source), "http") { args = append(args, "--offline-path", source) }
-			var err error
-			if choice == "3" { err = checkCommand(args) } else { err = installCommand(args) }
+		case "1":
+			args, err := askSource(in); if err == nil { err = installCommand(args) }
 			if err != nil { fmt.Println("Ошибка:", err) }
 		case "2": if err := statusCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
+		case "3": if err := checkCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "4": if err := rollbackCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "5":
 			fmt.Print("ID графа: "); if !in.Scan() { return in.Err() }
@@ -162,6 +156,21 @@ func menu() error {
 		case "6": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		default: fmt.Println("Неизвестный пункт")
 		}
+	}
+}
+
+func askSource(in *bufio.Scanner) ([]string, error) {
+	fmt.Print("\nИсточник пакетов:\n1. Интернет — последний GitHub Release [по умолчанию]\n2. Скачанный offline bundle\n\nВыберите источник: ")
+	if !in.Scan() { return nil, in.Err() }
+	switch strings.TrimSpace(in.Text()) {
+	case "", "1": return nil, nil
+	case "2":
+		fmt.Print("Путь к распакованному offline bundle: ")
+		if !in.Scan() { return nil, in.Err() }
+		path := strings.Trim(strings.TrimSpace(in.Text()), "\"")
+		if path == "" { return nil, errors.New("путь не задан") }
+		return []string{"--offline-path", path}, nil
+	default: return nil, errors.New("неизвестный источник")
 	}
 }
 

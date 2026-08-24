@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,4 +39,9 @@ func TestFetchVerifyExtractMovesStagedDirectory(t *testing.T) {
 	hash, size, err := fileHash(archive); if err != nil { t.Fatal(err) }; dest := filepath.Join(root, "app", "0.6.1")
 	if err := fetchVerifyExtract(root, "app.zip", bundle, true, "application", hash, size, dest, nil); err != nil { t.Fatal(err) }
 	data, err := os.ReadFile(filepath.Join(dest, "consultant.txt")); if err != nil { t.Fatal(err) }; if string(data) != "ok" { t.Fatal("bad extracted content") }
+}
+
+func TestAskSource(t *testing.T) {
+	args, err := askSource(bufio.NewScanner(strings.NewReader("\n"))); if err != nil || len(args) != 0 { t.Fatal("default online source failed") }
+	args, err = askSource(bufio.NewScanner(strings.NewReader("2\nbundle\n"))); if err != nil || len(args) != 2 || args[0] != "--offline-path" || args[1] != "bundle" { t.Fatal("offline source failed") }
 }
