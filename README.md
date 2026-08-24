@@ -2,7 +2,40 @@
 
 Репозиторий объединяет проверяемую базу знаний по 1С, XML-индекс локальной конфигурации и консольное приложение, которое создаёт проекты консультаций, схемы и пошаговые инструкции.
 
-## Быстрый запуск в Windows
+## Скачать и установить
+
+Готовые сборки находятся в [последнем GitHub Release](https://github.com/ilnurcode/Modelirovanie/releases/latest).
+Скачайте setup-архив своей ОС и архитектуры, распакуйте его и откройте launcher:
+
+| Система | Архив | Что открыть |
+|---|---|---|
+| Windows x64 | `1c-consultant-setup-windows-x64.zip` | `Install 1C-Consultant.cmd` |
+| Linux x64 | `1c-consultant-setup-linux-x64.zip` | `Install 1C-Consultant.sh` |
+| Linux ARM64 | `1c-consultant-setup-linux-arm64.zip` | `Install 1C-Consultant.sh` |
+| macOS Intel | `1c-consultant-setup-macos-x64.zip` | `Install 1C-Consultant.command` |
+| macOS Apple Silicon | `1c-consultant-setup-macos-arm64.zip` | `Install 1C-Consultant.command` |
+
+Installer открывает меню без обязательных аргументов. Выберите `Установить или
+обновить`, затем источник `Интернет` или скачанный offline bundle. Приложение, графы
+и подходящие версии будут выбраны, скачаны и проверены автоматически.
+
+Пока репозиторий приватный, online-установка без GitHub-аутентификации недоступна.
+Скачайте `1c-consultant-offline-bundle-<версия>.zip`, распакуйте его и выберите этот
+каталог в installer. После публикации репозитория источник `Интернет` будет работать
+напрямую.
+
+После установки основной launcher находится здесь:
+
+- Windows: `%LOCALAPPDATA%\1C-Consultant\1C-Consultant.cmd`;
+- Linux: `$XDG_DATA_HOME/1c-consultant/1c-consultant` или по умолчанию
+  `~/.local/share/1c-consultant/1c-consultant`;
+- macOS: `~/Library/Application Support/1C-Consultant/1c-consultant`.
+
+Подробно: [эксплуатация, обновления и графы](docs/service-operations.md),
+[работа с приложением](docs/consultant-cli.md),
+[техническая сборка Release](deployment/README.md).
+
+## Запуск из исходного репозитория
 
 1. Дважды щёлкните `consultant.cmd` или выполните `./consultant.ps1` в PowerShell.
 2. В меню выберите `Подключить AI` и найдите установленный Codex, Claude Code или OpenCode либо добавьте API. Подключение создаётся один раз и затем выбирается автоматически.

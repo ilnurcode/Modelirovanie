@@ -2,6 +2,18 @@
 
 ## Запуск
 
+Если приложение установлено через Release, откройте созданный installer’ом launcher:
+
+- Windows: `%LOCALAPPDATA%\1C-Consultant\1C-Consultant.cmd`;
+- Linux: `$XDG_DATA_HOME/1c-consultant/1c-consultant` или по умолчанию
+  `~/.local/share/1c-consultant/1c-consultant`;
+- macOS: `~/Library/Application Support/1C-Consultant/1c-consultant`.
+
+Обновления приложения и графов выполняются отдельным Go-installer. См.
+[руководство по эксплуатации](service-operations.md).
+
+Для запуска непосредственно из исходного репозитория используйте команды ниже.
+
 В корне репозитория выполните:
 
 ```powershell
