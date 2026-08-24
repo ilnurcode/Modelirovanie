@@ -13,7 +13,7 @@ GitHub Actions собирает `consultant.exe` из исходников ав�
 
 ```powershell
 ./deployment/scripts/build-release.ps1 `
-  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.6.0"
+  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.6.1"
 ```
 
 Если Python вызывается не через `py -3`, передайте

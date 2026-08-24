@@ -300,11 +300,10 @@ func fetchVerifyExtract(root, rawURL, base string, offline bool, kind, wantHash 
 	if wantSize > 0 && size != wantSize { return fmt.Errorf("размер пакета: ожидалось %d, получено %d", wantSize, size) }
 	if !strings.EqualFold(gotHash, wantHash) { return fmt.Errorf("SHA-256 не совпал: ожидалось %s, получено %s", wantHash, gotHash) }
 	log.info("SHA-256 подтвержден для " + filepath.Base(rawURL))
-	stage, err := os.MkdirTemp(tmpDir, "extract-*"); if err != nil { return err }; defer os.RemoveAll(stage)
-	payload := filepath.Join(stage, "payload"); if err := os.MkdirAll(payload, 0o755); err != nil { return err }
-	if err := extract(archive, rawURL, payload); err != nil { return err }
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil { return err }
-	return os.Rename(payload, dest)
+	destParent := filepath.Dir(dest); if err := os.MkdirAll(destParent, 0o755); err != nil { return err }
+	stage, err := os.MkdirTemp(destParent, ".install-*"); if err != nil { return err }; defer os.RemoveAll(stage)
+	if err := extract(archive, rawURL, stage); err != nil { return err }
+	return os.Rename(stage, dest)
 }
 
 func fetch(rawURL, base string, offline bool, kind, target string) error {

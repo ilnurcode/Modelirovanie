@@ -29,3 +29,12 @@ func TestDefaultManifestURL(t *testing.T) {
 	if c.manifestURL != defaultManifestURL || c.offlinePath != "" { t.Fatal("default manifest was not selected") }
 	if _, err := manifestSource(commonFlags{manifestURL: "https://example.test/manifest.json", offlinePath: "bundle"}); err == nil { t.Fatal("two sources accepted") }
 }
+
+func TestFetchVerifyExtractMovesStagedDirectory(t *testing.T) {
+	root := t.TempDir(); bundle := filepath.Join(root, "bundle"); appDir := filepath.Join(bundle, "application")
+	if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }
+	archive := filepath.Join(appDir, "app.zip"); f, err := os.Create(archive); if err != nil { t.Fatal(err) }; zw := zip.NewWriter(f); w, err := zw.Create("consultant.txt"); if err != nil { t.Fatal(err) }; if _, err := w.Write([]byte("ok")); err != nil { t.Fatal(err) }; if err := zw.Close(); err != nil { t.Fatal(err) }; if err := f.Close(); err != nil { t.Fatal(err) }
+	hash, size, err := fileHash(archive); if err != nil { t.Fatal(err) }; dest := filepath.Join(root, "app", "0.6.1")
+	if err := fetchVerifyExtract(root, "app.zip", bundle, true, "application", hash, size, dest, nil); err != nil { t.Fatal(err) }
+	data, err := os.ReadFile(filepath.Join(dest, "consultant.txt")); if err != nil { t.Fatal(err) }; if string(data) != "ok" { t.Fatal("bad extracted content") }
+}
