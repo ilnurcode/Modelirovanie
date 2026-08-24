@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/consultant-project.schema.json",
+  "title": "Consultant project",
+  "type": "object",
+  "required": ["project_id", "title", "mode", "status", "configuration", "generation"],
+  "properties": {
+    "project_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "title": {"type": "string", "minLength": 1},
+    "mode": {"const": "full"},
+    "status": {
+      "enum": [
+        "configured",
+        "requirements_pending",
+        "requirements_approved",
+        "design_pending",
+        "design_approved",
+        "generating",
+        "feedback_pending",
+        "draft",
+        "successful",
+        "needs_revision",
+        "error"
+      ]
+    },
+    "configuration": {"type": "object"},
+    "generation": {"type": "object"},
+    "sources": {"type": "object"}
+  }
+}

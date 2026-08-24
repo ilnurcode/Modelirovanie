@@ -1,0 +1,21 @@
+project_id: process-id
+title: Название проекта
+mode: full
+status: configured
+configuration:
+  product: not_configured
+  edition: ""
+  release: ""
+generation:
+  questions: required
+  follow_up_questions: true
+  diagram: true
+  detail_level: balanced
+sources:
+  internet_policy: official_and_allowed_web
+  local_configuration_id: ""
+agent_profile: ""
+revision: 1
+requirements_version: 0
+design_version: 0
+instruction_version: 0

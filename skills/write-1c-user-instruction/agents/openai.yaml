@@ -1,0 +1,4 @@
+interface:
+  display_name: "Инструкция пользователю 1С"
+  short_description: "ERP-инструкция после двух обязательных апрувов"
+  default_prompt: "Используй $write-1c-user-instruction только после апрува требований и схемы, чтобы составить точную ERP-инструкцию."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Схема бизнес-процесса"
+  short_description: "Конкретные ERP-схемы для отдельного апрува"
+  default_prompt: "Используй $build-process-diagram, чтобы построить конкретную ERP-схему и отправить её на апрув до инструкции."

@@ -1,0 +1,10 @@
+* text=auto
+*.md text eol=lf
+*.json text eol=lf
+*.ndjson text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
+1c_modeler_upgrade/1c_erp_2_5_source_graph.json filter=lfs diff=lfs merge=lfs -text
+1c_modeler_upgrade/graphs/1c_erp_2_5_object_graph.json filter=lfs diff=lfs merge=lfs -text
+1c_modeler_upgrade/graphs/1c_erp_2_5_semantic_graph.json filter=lfs diff=lfs merge=lfs -text

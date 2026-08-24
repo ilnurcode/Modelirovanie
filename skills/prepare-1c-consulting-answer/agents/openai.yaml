@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ответ консультанта 1С"
+  short_description: "Два апрува перед подробной ERP-инструкцией"
+  default_prompt: "Используй $prepare-1c-consulting-answer и проведи задачу через апрув требований и схемы до инструкции."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Связь XML метаданных 1С"
+  short_description: "Объекты, формы и команды конфигурации в графе"
+  default_prompt: "Используй $link-1c-metadata-xml, чтобы связать XML конфигурации 1С с графом и подтвердить детали ERP-инструкции."

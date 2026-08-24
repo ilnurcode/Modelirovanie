@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+# Локальные исходники, настройки и сборочные артефакты.
+/source/
+/local/
+/build/
+/dist/
+/.venv/
+/consultant.local.toml
+/*.spec
+/metadata/raw/
+/metadata/cache/
+/metadata/index/*.ndjson
+/metadata/index/failures.json

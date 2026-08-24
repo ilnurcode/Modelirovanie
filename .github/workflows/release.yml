@@ -1,0 +1,105 @@
+name: publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Application version from PACKAGE_MANIFEST.json (for example 0.5.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify version and repository
+        shell: pwsh
+        run: |
+          $package = Get-Content -Raw -LiteralPath PACKAGE_MANIFEST.json | ConvertFrom-Json
+          $expectedTag = "v$($package.application_version)"
+          if ($env:RELEASE_TAG -ne $expectedTag) {
+            throw "Release tag $env:RELEASE_TAG does not match PACKAGE_MANIFEST.json ($expectedTag)."
+          }
+          if (-not (Test-Path -LiteralPath consultant.exe)) {
+            throw "consultant.exe is missing. Build and commit the tested Windows package first."
+          }
+          python scripts/validate_repository.py
+          if ($LASTEXITCODE -ne 0) { throw "Repository validation failed." }
+          "VERSION=$($package.application_version)" >> $env:GITHUB_ENV
+
+      - name: Build application, graph and manifest
+        shell: pwsh
+        run: |
+          $baseUrl = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG"
+          ./deployment/scripts/build-release.ps1 `
+            -BaseUrl $baseUrl `
+            -OutputDirectory release `
+            -Python python `
+            -PythonArguments @()
+
+      - name: Build installer binaries
+        shell: pwsh
+        run: ./deployment/scripts/build-installers.ps1 -OutputDirectory release
+
+      - name: Build offline bundle
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $env:RUNNER_TEMP "1c-consultant-offline-bundle"
+          New-Item -ItemType Directory -Force -Path `
+            (Join-Path $bundle "installer"), `
+            (Join-Path $bundle "application"), `
+            (Join-Path $bundle "graphs") | Out-Null
+          Copy-Item -LiteralPath release/manifest.json -Destination $bundle
+          Get-ChildItem -LiteralPath release -Filter "1c-consultant-installer-*" -File |
+            Copy-Item -Destination (Join-Path $bundle "installer")
+          Get-ChildItem -LiteralPath release -Filter "1c-consultant-$env:VERSION-windows-x64.zip" -File |
+            Copy-Item -Destination (Join-Path $bundle "application")
+          Get-ChildItem -LiteralPath release -Filter "erp-*-graph-$env:VERSION.zip" -File |
+            Copy-Item -Destination (Join-Path $bundle "graphs")
+          $offlineArchive = Join-Path release "1c-consultant-offline-bundle-$env:VERSION.zip"
+          Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $offlineArchive -CompressionLevel Optimal
+          Get-ChildItem -LiteralPath release -File | Where-Object Name -ne "SHA256SUMS" |
+            Sort-Object Name | ForEach-Object {
+              "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
+            } | Set-Content -Encoding ascii -LiteralPath release/SHA256SUMS
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem -LiteralPath release -File | ForEach-Object FullName)
+          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
+          } else {
+            gh release create $env:RELEASE_TAG @assets `
+              --repo "${{ github.repository }}" `
+              --target $env:GITHUB_SHA `
+              --title "1C-Consultant $env:VERSION" `
+              --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed." }

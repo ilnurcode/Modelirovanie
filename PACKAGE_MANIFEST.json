@@ -1,0 +1,33 @@
+{
+  "package": "1C-Consultant-Portable",
+  "application_version": "0.5.0",
+  "created_at": "2026-08-18",
+  "target_os": "Windows 10/11",
+  "runtime": "standalone consultant.exe",
+  "python_for_source_development": ">=3.11",
+  "configuration_pack": {
+    "product": "1С:ERP Управление предприятием 2",
+    "release": "2.5.27.49",
+    "mode_without_primary_xml": "candidates_only",
+    "included": [
+      "route_graph",
+      "semantic_graph",
+      "search_index"
+    ],
+    "not_included": [
+      "primary_xml",
+      "full_object_graph",
+      "source_graph",
+      "raw_its_documentation"
+    ]
+  },
+  "privacy": {
+    "contains_xml": false,
+    "contains_raw_its": false,
+    "contains_input_documents": false,
+    "contains_user_projects": false,
+    "contains_api_keys": false,
+    "contains_local_agent_profiles": false
+  },
+  "integrity_file": "FILES.sha256"
+}

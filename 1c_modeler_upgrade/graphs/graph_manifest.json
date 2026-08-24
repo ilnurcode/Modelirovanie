@@ -1,0 +1,14 @@
+{
+  "configuration": "1С:ERP 2.5",
+  "release": "2.5.27.49",
+  "release_evidence": "metadata/index/configuration.json",
+  "route_graph_generator": "scripts/build_1c_route_graph.py",
+  "graphs": [
+    {"file": "1c_erp_2_5_source_graph.json", "purpose": "ИТС и интерфейс", "status": "НЕ_РАСПРОСТРАНЯЕТСЯ"},
+    {"file": "graphs/1c_erp_2_5_object_graph.json", "purpose": "Объекты и структурные элементы из XML точного релиза", "status": "НЕ_РАСПРОСТРАНЯЕТСЯ", "release": "2.5.27.49"},
+    {"file": "graphs/1c_erp_2_5_route_graph.json", "purpose": "Пути пользовательского интерфейса; без первичного XML используются как кандидаты", "status": "КАНДИДАТЫ"},
+    {"file": "graphs/1c_erp_2_5_semantic_graph.json", "purpose": "Структурные связи; без первичного XML используются как кандидаты", "status": "КАНДИДАТЫ", "release": "2.5.27.49"},
+    {"file": "graphs/process_graph_template.json", "purpose": "Процесс заказчика", "status": "ШАБЛОН"},
+    {"file": "graphs/search-index.ndjson.gz", "purpose": "Компактный поисковый индекс всех графов", "status": "ГОТОВ"}
+  ]
+}

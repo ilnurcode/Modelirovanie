@@ -1,0 +1,9 @@
+{
+  "configuration": "1С:ERP 2.5",
+  "status": "ШАБЛОН",
+  "purpose": "Граф одного бизнес-процесса заказчика.",
+  "nodes": [],
+  "edges": [],
+  "required_node_types": ["ProcessStep", "Role", "Decision", "Input", "Output"],
+  "required_edge_types": ["performed_by", "next", "branches_to", "consumes", "produces"]
+}

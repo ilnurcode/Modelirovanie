@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/generation-result.schema.json",
+  "title": "AI generation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "title",
+    "summary",
+    "questions",
+    "implementation",
+    "roles",
+    "objects",
+    "settings",
+    "diagram_mermaid",
+    "steps",
+    "alternatives",
+    "limitations",
+    "customizations",
+    "sources"
+  ],
+  "properties": {
+    "artifact_type": {
+      "enum": ["questions", "design", "instruction"]
+    },
+    "title": {"type": "string", "minLength": 1},
+    "summary": {"type": "string"},
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "required", "impact", "options"],
+        "properties": {
+          "id": {"type": "string"},
+          "text": {"type": "string"},
+          "required": {"type": "boolean"},
+          "impact": {"type": "string"},
+          "options": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "implementation": {"type": "array", "items": {"type": "string"}},
+    "roles": {"type": "array", "items": {"type": "string"}},
+    "objects": {"type": "array", "items": {"type": "string"}},
+    "settings": {"type": "array", "items": {"type": "string"}},
+    "diagram_mermaid": {"type": "string"},
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "role",
+          "precondition",
+          "ui_path",
+          "form",
+          "fields",
+          "command",
+          "actions",
+          "expected_status",
+          "result",
+          "verification",
+          "verification_status",
+          "evidence_refs",
+          "semantic_relation_refs"
+        ],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "role": {"type": "string"},
+          "precondition": {"type": "string"},
+          "ui_path": {"type": "string"},
+          "form": {"type": "string"},
+          "fields": {"type": "array", "items": {"type": "string"}},
+          "command": {"type": "string"},
+          "actions": {"type": "array", "items": {"type": "string"}},
+          "expected_status": {"type": "string"},
+          "result": {"type": "string"},
+          "verification": {"type": "string"},
+          "verification_status": {
+            "enum": ["verified", "verified_metadata", "inferred"]
+          },
+          "evidence_refs": {"type": "array", "items": {"type": "string"}},
+          "semantic_relation_refs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Идентификаторы рёбер semantic graph, подтверждающих межобъектные связи шага."
+          }
+        }
+      }
+    },
+    "alternatives": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "customizations": {"type": "array", "items": {"type": "string"}},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "local_ref",
+          "url",
+          "product",
+          "release",
+          "verification_status",
+          "notes"
+        ],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "local_ref": {"type": "string"},
+          "url": {"type": "string"},
+          "product": {"type": "string"},
+          "release": {"type": "string"},
+          "verification_status": {
+            "enum": ["verified", "verified_metadata", "inferred"]
+          },
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}
