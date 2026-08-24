@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,37 @@ from consultant_cli.services.modeler import ModelerReviewService
 
 
 class ModelerReviewTest(unittest.TestCase):
+    def test_installed_graph_overrides_bundled_graph(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "repo"
+            data = Path(temp) / "data"
+            graph_dir = data / "graphs" / "erp" / "2.5" / "0.5.0"
+            graph_dir.mkdir(parents=True)
+            state = {
+                "graphs": {
+                    "erp": {
+                        "path": str(graph_dir),
+                        "installed_at": "2026-08-24T00:00:00Z",
+                    }
+                }
+            }
+            (data / "config").mkdir()
+            (data / "config" / "installed.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+
+            previous = os.environ.get("CONSULTANT_DATA_DIR")
+            os.environ["CONSULTANT_DATA_DIR"] = str(data)
+            try:
+                service = ModelerReviewService(RepositoryPaths(root))
+            finally:
+                if previous is None:
+                    os.environ.pop("CONSULTANT_DATA_DIR", None)
+                else:
+                    os.environ["CONSULTANT_DATA_DIR"] = previous
+
+            self.assertEqual(graph_dir.resolve(), service.graphs)
+
     def test_context_reads_compact_index_from_each_graph(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

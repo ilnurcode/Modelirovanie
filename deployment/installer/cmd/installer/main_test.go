@@ -22,3 +22,10 @@ func TestExtractZipRejectsTraversal(t *testing.T) {
 func TestCompareVersion(t *testing.T) {
 	if compareVersion("1.5.0", "1.4.9") <= 0 || compareVersion("1.5", "1.5.0") != 0 || compareVersion("1.4.9", "1.5.0") >= 0 { t.Fatal("version comparison failed") }
 }
+
+func TestDefaultManifestURL(t *testing.T) {
+	c, err := manifestSource(commonFlags{})
+	if err != nil { t.Fatal(err) }
+	if c.manifestURL != defaultManifestURL || c.offlinePath != "" { t.Fatal("default manifest was not selected") }
+	if _, err := manifestSource(commonFlags{manifestURL: "https://example.test/manifest.json", offlinePath: "bundle"}); err == nil { t.Fatal("two sources accepted") }
+}

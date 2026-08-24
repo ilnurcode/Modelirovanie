@@ -17,8 +17,10 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $packageManifest = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "PACKAGE_MANIFEST.json") | ConvertFrom-Json
 $version = [string]$packageManifest.application_version
 $configurationVersion = [string]$packageManifest.configuration_pack.release
+$graphVersion = [string]$packageManifest.configuration_pack.graph_version
+if (-not $graphVersion) { $graphVersion = $version }
 $appName = "1c-consultant-$version-windows-x64.zip"
-$graphName = "erp-$configurationVersion-graph-$version.zip"
+$graphName = "erp-$configurationVersion-graph-$graphVersion.zip"
 $appArchive = Join-Path $OutputDirectory $appName
 $graphArchive = Join-Path $OutputDirectory $graphName
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-consultant-release-" + [guid]::NewGuid().ToString("N"))
@@ -35,7 +37,14 @@ try {
     New-Item -ItemType Directory -Force -Path $appStage, $graphStage | Out-Null
     $excludedTopLevel = @(".git", ".venv", "build", "dist", "release", "results", "deployment", "tests")
     Get-ChildItem -LiteralPath $ProjectRoot -Force | Where-Object { $_.Name -notin $excludedTopLevel } | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $appStage -Recurse -Force
+        if ($_.Name -eq "1c_modeler_upgrade") {
+            $modelerStage = Join-Path $appStage $_.Name
+            New-Item -ItemType Directory -Force -Path $modelerStage | Out-Null
+            Get-ChildItem -LiteralPath $_.FullName -Force | Where-Object Name -ne "graphs" |
+                Copy-Item -Destination $modelerStage -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $_.FullName -Destination $appStage -Recurse -Force
+        }
     }
     $stagedIntegrity = Join-Path $appStage "FILES.sha256"
     Remove-Item -LiteralPath $stagedIntegrity -Force -ErrorAction SilentlyContinue
@@ -68,7 +77,7 @@ try {
         }
         graphs = @([ordered]@{
             id = "erp-$configurationVersion"; name = "1С:ERP Управление предприятием 2"
-            configuration_version = $configurationVersion; graph_version = $version; url = "$base/$graphName"
+            configuration_version = $configurationVersion; graph_version = $graphVersion; url = "$base/$graphName"
             sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $graphArchive).Hash.ToLowerInvariant()
             size = $graphFile.Length; minimum_application_version = $version
         })

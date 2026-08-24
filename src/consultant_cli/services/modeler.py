@@ -37,7 +37,7 @@ class ModelerReviewService:
     def __init__(self, paths: RepositoryPaths):
         self.paths = paths
         self.root = paths.root / "1c_modeler_upgrade"
-        self.graphs = self.root / "graphs"
+        self.graphs = paths.modeler_graphs()
         self.manifest_path = self.graphs / "graph_manifest.json"
         self.route_graph_path = self.graphs / "1c_erp_2_5_route_graph.json"
         self.semantic_graph_path = self.graphs / "1c_erp_2_5_semantic_graph.json"

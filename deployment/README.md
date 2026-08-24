@@ -8,19 +8,20 @@ Windows, Linux и macOS; новые платформы следует добав
 
 ## Подготовка Release
 
-Требования: PowerShell 7, Python 3.11 и готовый `consultant.exe`.
+Требования для локальной сборки: PowerShell 7, Python 3.11 и готовый `consultant.exe`.
+GitHub Actions собирает `consultant.exe` из исходников автоматически.
 
 ```powershell
 ./deployment/scripts/build-release.ps1 `
-  -BaseUrl "https://git.example.org/group/project/releases/download/v0.5.0"
+  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.6.0"
 ```
 
 Если Python вызывается не через `py -3`, передайте
 `-Python "C:\path\python.exe" -PythonArguments @()`.
 
 Скрипт проверяет версию приложения и репозиторий, создаёт application/graph ZIP,
-вычисляет размер и SHA-256, затем записывает `release/manifest.json`. URL и суммы
-не зашиты в installer.
+вычисляет размер и SHA-256, затем записывает `release/manifest.json`. Installer
+по умолчанию берёт manifest последнего Release; `--manifest` позволяет заменить URL.
 
 Для offline bundle положите `manifest.json` в корень, application ZIP — в
 `application/`, graph ZIP — в `graphs/`, installer-бинарники — в `installer/`.
@@ -42,7 +43,6 @@ Windows, Linux и macOS; новые платформы следует добав
 ```powershell
 # Online
 ./1c-consultant-installer-windows-x64.exe install `
-  --manifest "https://example.org/releases/v0.5.0/manifest.json" `
   --application --graphs "erp-2.5.27.49" --non-interactive
 
 # Offline
@@ -51,7 +51,7 @@ Windows, Linux и macOS; новые платформы следует добав
   --application --graphs "erp-2.5.27.49" --non-interactive
 
 ./1c-consultant-installer-windows-x64.exe status
-./1c-consultant-installer-windows-x64.exe check --manifest "https://example.org/manifest.json"
+./1c-consultant-installer-windows-x64.exe check
 ./1c-consultant-installer-windows-x64.exe rollback
 ```
 
@@ -60,5 +60,7 @@ Windows, Linux и macOS; новые платформы следует добав
 `consultant.exe --version`, после чего атомарно переключается active version.
 Предыдущая версия сохраняется для rollback. Состояние находится в
 `config/installed.json`, журнал без URL query/fragment — в `logs/installer.log`.
+Launcher передаёт приложению каталог данных, поэтому Modeler использует активный
+внешний граф. Если состояние отсутствует, приложение пробует встроенный граф.
 
 Локальные секреты подключения к 1С не входят ни в manifest, ни в installed.json.

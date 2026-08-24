@@ -23,7 +23,10 @@ import (
 	"time"
 )
 
-const installerVersion = "0.1.0"
+const (
+	installerVersion = "0.2.0"
+	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
+)
 
 type Manifest struct {
 	SchemaVersion int         `json:"schema_version"`
@@ -127,7 +130,8 @@ func usage() {
   remove-graph  удалить выбранный граф
   uninstall     удалить локальную установку
 
-Источник: --manifest https://.../manifest.json или --offline-path <bundle-dir>
+По умолчанию используется manifest последнего GitHub Release.
+Другой источник: --manifest https://.../manifest.json или --offline-path <bundle-dir>
 Общие параметры: --data-dir <dir>
 `)
 }
@@ -141,11 +145,10 @@ func menu() error {
 		switch choice {
 		case "0": return nil
 		case "1", "3":
-			fmt.Print("Manifest URL или путь к offline bundle: ")
+			fmt.Print("Manifest URL, путь к offline bundle или Enter для GitHub Release: ")
 			if !in.Scan() { return in.Err() }
 			source := strings.TrimSpace(in.Text())
 			args := []string{}
-			if strings.TrimSpace(source) == "" { fmt.Println("Источник не задан"); continue }
 			if strings.TrimSpace(source) != "" && strings.HasPrefix(strings.TrimSpace(source), "http") { args = append(args, "--manifest", source) }
 			if strings.TrimSpace(source) != "" && !strings.HasPrefix(strings.TrimSpace(source), "http") { args = append(args, "--offline-path", source) }
 			var err error
@@ -343,11 +346,18 @@ func extractTarGz(path, dest string) error {
 }
 
 func loadManifest(c commonFlags, log *logger) (Manifest, string, bool, error) {
-	var m Manifest; var data []byte; var err error; var base string; offline := c.offlinePath != ""
-	if (c.manifestURL == "") == (c.offlinePath == "") { return m, "", false, errors.New("задайте ровно один источник: --manifest или --offline-path") }
+	var m Manifest; var data []byte; var err error; var base string
+	c, err = manifestSource(c); if err != nil { return m, "", false, err }
+	offline := c.offlinePath != ""
 	if offline { base, err = filepath.Abs(c.offlinePath); if err == nil { data, err = os.ReadFile(filepath.Join(base, "manifest.json")) } } else { u, parseErr := url.Parse(c.manifestURL); if parseErr != nil || u.Scheme != "https" { return m, "", false, errors.New("manifest должен иметь HTTPS URL") }; base = c.manifestURL; client := secureHTTPClient(30*time.Second); var resp *http.Response; resp, err = client.Get(c.manifestURL); if err == nil { defer resp.Body.Close(); if resp.StatusCode != http.StatusOK { err = fmt.Errorf("manifest: HTTP %s", resp.Status) } else { data, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20)) } } }
 	if err != nil { return m, base, offline, err }; if err := json.Unmarshal(data, &m); err != nil { return m, base, offline, err }; if m.SchemaVersion != 1 { return m, base, offline, fmt.Errorf("schema_version %d не поддерживается", m.SchemaVersion) }; if err := validateManifest(m); err != nil { return m, base, offline, err }
 	log.info("Manifest: " + safeLocation(valueOr(c.manifestURL, c.offlinePath))); return m, base, offline, nil
+}
+
+func manifestSource(c commonFlags) (commonFlags, error) {
+	if c.manifestURL != "" && c.offlinePath != "" { return c, errors.New("задайте только один источник: --manifest или --offline-path") }
+	if c.manifestURL == "" && c.offlinePath == "" { c.manifestURL = defaultManifestURL }
+	return c, nil
 }
 
 func validateManifest(m Manifest) error {
@@ -373,8 +383,8 @@ func saveState(root string, s *State) error {
 func writeLauncher(root string, s *State) error {
 	a, ok := s.Applications[s.ActiveApplication]; if !ok { return errors.New("активное приложение отсутствует") }; exe, err := safeJoin(a.Path, a.Executable); if err != nil { return err }
 	if !within(filepath.Join(root, "app"), a.Path) { return errors.New("путь приложения выходит из каталога установки") }
-	if runtime.GOOS == "windows" { body := "@echo off\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755) }
-	body := "#!/bin/sh\ncd '"+strings.ReplaceAll(a.Path, "'", "'\\''")+"'\nexec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' \"$@\"\n"; return os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755)
+	if runtime.GOOS == "windows" { body := "@echo off\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755) }
+	escapedRoot := strings.ReplaceAll(root, "'", "'\\''"); body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR='"+escapedRoot+"'\ncd '"+strings.ReplaceAll(a.Path, "'", "'\\''")+"'\nexec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' \"$@\"\n"; return os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755)
 }
 
 func dataDir(override string) (string, error) {
@@ -388,7 +398,7 @@ func (l *logger) close() { if l != nil && l.file != nil { l.file.Close() } }
 
 func askSelection(m Manifest) (bool, map[string]bool, error) {
 	in := bufio.NewScanner(os.Stdin); fmt.Printf("Установить приложение %s? [Y/n]: ", m.Application.Version); if !in.Scan() { return false, nil, in.Err() }; app := !strings.EqualFold(strings.TrimSpace(in.Text()), "n")
-	fmt.Println("Доступные графы:"); for i, g := range m.Graphs { fmt.Printf("[%d] %s %s graph %s (%s)\n", i+1, g.Name, g.ConfigurationVersion, g.GraphVersion, g.ID) }; fmt.Print("Введите номера через запятую или Enter: "); if !in.Scan() { return false, nil, in.Err() }; selected := map[string]bool{}; for item := range csvSet(in.Text()) { var n int; if _, err := fmt.Sscanf(item, "%d", &n); err != nil || n < 1 || n > len(m.Graphs) { return false, nil, fmt.Errorf("некорректный номер графа %q", item) }; selected[m.Graphs[n-1].ID] = true }; return app, selected, nil
+	fmt.Println("Доступные графы:"); for i, g := range m.Graphs { fmt.Printf("[%d] %s %s graph %s (%s)\n", i+1, g.Name, g.ConfigurationVersion, g.GraphVersion, g.ID) }; fmt.Print("Введите номера через запятую или Enter для установки всех: "); if !in.Scan() { return false, nil, in.Err() }; selected := map[string]bool{}; answer := strings.TrimSpace(in.Text()); if answer == "" { for _, g := range m.Graphs { selected[g.ID] = true }; return app, selected, nil }; for item := range csvSet(answer) { var n int; if _, err := fmt.Sscanf(item, "%d", &n); err != nil || n < 1 || n > len(m.Graphs) { return false, nil, fmt.Errorf("некорректный номер графа %q", item) }; selected[m.Graphs[n-1].ID] = true }; return app, selected, nil
 }
 
 func graphByID(m Manifest, id string) (Graph, bool) { for _, g := range m.Graphs { if g.ID == id { return g, true } }; return Graph{}, false }

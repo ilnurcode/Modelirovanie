@@ -25,6 +25,8 @@ jobs:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - uses: actions/setup-go@v7
         with:
@@ -43,12 +45,16 @@ jobs:
           if ($env:RELEASE_TAG -ne $expectedTag) {
             throw "Release tag $env:RELEASE_TAG does not match PACKAGE_MANIFEST.json ($expectedTag)."
           }
-          if (-not (Test-Path -LiteralPath consultant.exe)) {
-            throw "consultant.exe is missing. Build and commit the tested Windows package first."
-          }
           python scripts/validate_repository.py
           if ($LASTEXITCODE -ne 0) { throw "Repository validation failed." }
           "VERSION=$($package.application_version)" >> $env:GITHUB_ENV
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller
+          ./scripts/build_windows.ps1 -Python python
+          Copy-Item -LiteralPath dist/consultant.exe -Destination consultant.exe -Force
 
       - name: Build application, graph and manifest
         shell: pwsh
@@ -77,7 +83,7 @@ jobs:
             Copy-Item -Destination (Join-Path $bundle "installer")
           Get-ChildItem -LiteralPath release -Filter "1c-consultant-$env:VERSION-windows-x64.zip" -File |
             Copy-Item -Destination (Join-Path $bundle "application")
-          Get-ChildItem -LiteralPath release -Filter "erp-*-graph-$env:VERSION.zip" -File |
+          Get-ChildItem -LiteralPath release -Filter "erp-*-graph-*.zip" -File |
             Copy-Item -Destination (Join-Path $bundle "graphs")
           $offlineArchive = Join-Path release "1c-consultant-offline-bundle-$env:VERSION.zip"
           Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $offlineArchive -CompressionLevel Optimal

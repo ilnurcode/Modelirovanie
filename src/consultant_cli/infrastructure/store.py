@@ -65,6 +65,26 @@ class RepositoryPaths:
             "Не найден корень базы знаний: ожидаются README.md и каталог skills/."
         )
 
+    def modeler_graphs(self) -> Path:
+        data_dir = os.environ.get("CONSULTANT_DATA_DIR")
+        if data_dir:
+            root = Path(data_dir).resolve()
+            state_path = root / "config" / "installed.json"
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                graphs = sorted(
+                    state.get("graphs", {}).values(),
+                    key=lambda graph: str(graph.get("installed_at", "")),
+                    reverse=True,
+                )
+                for graph in graphs:
+                    path = Path(str(graph.get("path", ""))).resolve()
+                    if (root / "graphs").resolve() in path.parents and path.is_dir():
+                        return path
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+        return self.root / "1c_modeler_upgrade" / "graphs"
+
 
 class ProjectStore:
     def __init__(self, paths: RepositoryPaths):
