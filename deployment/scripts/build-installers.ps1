@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $deploymentRoot = Split-Path -Parent $PSScriptRoot
 $installerRoot = Join-Path $deploymentRoot "installer"
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $deploymentRoot "dist" }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
