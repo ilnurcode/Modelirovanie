@@ -13,9 +13,11 @@ daemon. После установки оно запускается по тре�
 ## Первый запуск
 
 1. Откройте [последний Release](https://github.com/ilnurcode/Modelirovanie/releases/latest).
-2. Скачайте `1c-consultant-setup-<ОС>-<архитектура>.zip`.
-3. Распакуйте ZIP.
-4. Откройте `Install 1C-Consultant.cmd`, `.sh` или `.command`.
+2. На Windows/Linux скачайте `1c-consultant-setup-<ОС>-<архитектура>.zip` и
+   распакуйте ZIP. На macOS скачайте `.pkg` своей архитектуры и установите его.
+3. На Windows/Linux откройте `Install 1C-Consultant.cmd` или `.sh`. На macOS
+   запустите `1C-Consultant` из Applications.
+4. Дождитесь открытия CLI-меню.
 5. В меню выберите `1. Установить или обновить`.
 6. Выберите источник пакетов.
 7. Подтвердите установку приложения. Нажатие Enter при выборе графов устанавливает
@@ -50,9 +52,10 @@ Installer создаёт launcher, который передаёт прилож�
 - macOS: `~/Library/Application Support/1C-Consultant/1c-consultant`.
 
 Windows также создаёт ярлыки `1C-Consultant` на рабочем столе и в меню «Пуск».
-На macOS программа доступна в `~/Applications/1C-Consultant.app`; её открытие
-запускает CLI в Terminal. Все элементы создаются для текущего пользователя без
-прав администратора и удаляются пунктом `Удалить 1C-Consultant`.
+На macOS PKG устанавливает программу в `/Applications/1C-Consultant.app`; её открытие
+запускает CLI в Terminal. Первый запуск открывает installer, последующие — активную
+версию сервиса. Данные остаются в `~/Library/Application Support/1C-Consultant`.
+Удаление сервиса не удаляет приложение, установленное через PKG.
 
 Работа с проектами, подключение AI, апрувы, экспорт и удаление проектов описаны в
 [руководстве консультанта](consultant-cli.md).

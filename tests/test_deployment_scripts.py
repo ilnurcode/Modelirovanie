@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import plistlib
 import tempfile
 import unittest
 import zipfile
@@ -64,6 +65,15 @@ class DeploymentScriptsTest(unittest.TestCase):
             with zipfile.ZipFile(archive) as package:
                 mode = package.getinfo("installer").external_attr >> 16
             self.assertEqual(0o100755, mode)
+
+    def test_macos_pkg_app_launcher_contract(self):
+        plist = plistlib.loads((ROOT / "deployment" / "macos" / "Info.plist").read_bytes())
+        launcher = (ROOT / "deployment" / "macos" / "launcher.sh").read_text(encoding="utf-8")
+        self.assertEqual("APPL", plist["CFBundlePackageType"])
+        self.assertEqual("1C-Consultant", plist["CFBundleExecutable"])
+        self.assertIn("Library/Application Support/1C-Consultant", launcher)
+        self.assertIn("CONSULTANT_EXTERNAL_APP=1", launcher)
+        self.assertIn("application \"Terminal\"", launcher)
 
 
 if __name__ == "__main__":

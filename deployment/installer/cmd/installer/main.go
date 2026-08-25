@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.4.1"
+	installerVersion = "0.4.2"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -416,12 +416,16 @@ func writeLauncher(root string, s *State) error {
 }
 
 func writeOSIntegration(root string, s *State) error {
+	if runtime.GOOS == "darwin" && externalAppManaged() { return nil }
 	switch runtime.GOOS { case "windows": return runPowerShell(windowsShortcutScript(root, false)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return writeMacOSAppAt(home, root, s.ActiveApplication); default: return nil }
 }
 
 func removeOSIntegration(root string) error {
+	if runtime.GOOS == "darwin" && externalAppManaged() { return nil }
 	switch runtime.GOOS { case "windows": return runPowerShell(windowsShortcutScript(root, true)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return removeMacOSAppAt(home); default: return nil }
 }
+
+func externalAppManaged() bool { return os.Getenv("CONSULTANT_EXTERNAL_APP") == "1" }
 
 func windowsShortcutScript(root string, remove bool) string {
 	prefix := "$ErrorActionPreference='Stop';$desktop=[Environment]::GetFolderPath('Desktop');$programs=[Environment]::GetFolderPath('Programs');$menu=Join-Path $programs '1C-Consultant';$desktopLink=Join-Path $desktop '1C-Consultant.lnk';$menuLink=Join-Path $menu '1C-Consultant.lnk';"

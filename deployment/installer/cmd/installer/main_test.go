@@ -82,3 +82,8 @@ func TestWriteAndRemoveMacOSApp(t *testing.T) {
 	launcher, err := os.ReadFile(filepath.Join(app, "MacOS", "1C-Consultant")); if err != nil { t.Fatal(err) }; if !strings.Contains(string(launcher), shellQuote(filepath.Join(root, "1C-Consultant.command"))) { t.Fatal("macOS launcher path was not quoted") }
 	if err := removeMacOSAppAt(home); err != nil { t.Fatal(err) }; if _, err := os.Stat(filepath.Join(home, "Applications", "1C-Consultant.app")); !errors.Is(err, os.ErrNotExist) { t.Fatal("macOS app was not removed") }
 }
+
+func TestExternalAppManaged(t *testing.T) {
+	t.Setenv("CONSULTANT_EXTERNAL_APP", "1")
+	if !externalAppManaged() { t.Fatal("external app mode was not detected") }
+}

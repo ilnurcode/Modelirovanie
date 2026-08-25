@@ -29,8 +29,8 @@ evidence/GAP maps, traceability, acceptance tests, incremental rebuild и пол
 | Windows x64 | `1c-consultant-setup-windows-x64.zip` | `Install 1C-Consultant.cmd` |
 | Linux x64 | `1c-consultant-setup-linux-x64.zip` | `Install 1C-Consultant.sh` |
 | Linux ARM64 | `1c-consultant-setup-linux-arm64.zip` | `Install 1C-Consultant.sh` |
-| macOS Intel | `1c-consultant-setup-macos-x64.zip` | `Install 1C-Consultant.command` |
-| macOS Apple Silicon | `1c-consultant-setup-macos-arm64.zip` | `Install 1C-Consultant.command` |
+| macOS Intel | `1c-consultant-installer-macos-x64.pkg` | открыть `.pkg`, затем `1C-Consultant` в Applications |
+| macOS Apple Silicon | `1c-consultant-installer-macos-arm64.pkg` | открыть `.pkg`, затем `1C-Consultant` в Applications |
 
 Installer открывает меню. Выберите `Установить или обновить`, затем интернет или
 распакованный offline bundle. Приложение 4.1, совместимый граф и нужная платформа
@@ -43,7 +43,8 @@ Installer открывает меню. Выберите `Установить и
 
 - Windows: launcher в `%LOCALAPPDATA%\1C-Consultant`, ярлыки на рабочем столе и в меню «Пуск»;
 - Linux: `~/.local/share/1c-consultant/1c-consultant`;
-- macOS: `~/Applications/1C-Consultant.app`, CLI открывается в Terminal.
+- macOS: `/Applications/1C-Consultant.app`, CLI открывается в Terminal. Пакет пока
+  не подписан, поэтому первый запуск может потребовать «Открыть» в контекстном меню.
 
 Проекты, настройки и активные графы хранятся в постоянном каталоге данных отдельно
 от версии приложения, поэтому обновление и rollback их не удаляют.

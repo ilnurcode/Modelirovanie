@@ -64,6 +64,28 @@ jobs:
           path: application-packages/*.zip
           if-no-files-found: error
 
+      - uses: actions/setup-go@v7
+        if: matrix.platform == 'macos'
+        with:
+          go-version: "1.22.x"
+          cache: false
+
+      - name: Build unsigned macOS pkg
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          version="$(python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["application_version"])')"
+          bash deployment/scripts/build-macos-pkg.sh \
+            "${{ matrix.arch }}" "$version" \
+            "macos-packages/1c-consultant-installer-macos-${{ matrix.arch }}.pkg"
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.platform == 'macos'
+        with:
+          name: macos-pkg-${{ matrix.arch }}
+          path: macos-packages/*.pkg
+          if-no-files-found: error
+
   release:
     needs: build-application
     runs-on: windows-latest
@@ -87,6 +109,12 @@ jobs:
         with:
           pattern: application-*
           path: application-packages
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: macos-pkg-*
+          path: release
           merge-multiple: true
 
       - name: Verify version and repository
