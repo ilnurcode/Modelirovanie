@@ -48,6 +48,7 @@ if ($GraphDatabaseSha256) {
 
 $package = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "PACKAGE_MANIFEST.json") | ConvertFrom-Json
 $version = [string]$package.application_version
+$installerVersion = [string]$package.installer_version
 $configurationVersion = [string]$package.configuration_pack.release
 $graphVersion = [string]$package.configuration_pack.graph_version
 if (-not $graphVersion) { $graphVersion = $version }
@@ -74,6 +75,29 @@ foreach ($platform in $expected) {
     }
 }
 
+$installerArtifacts = @()
+$installerNames = [ordered]@{
+    "windows-x64" = "1c-consultant-installer-windows-x64.exe"
+    "linux-x64" = "1c-consultant-installer-linux-x64"
+    "linux-arm64" = "1c-consultant-installer-linux-arm64"
+    "macos-x64" = "1c-consultant-installer-macos-x64"
+    "macos-arm64" = "1c-consultant-installer-macos-arm64"
+}
+foreach ($platform in $expected) {
+    $name = $installerNames[$platform]
+    $source = Join-Path $OutputDirectory $name
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Не найден installer: $name" }
+    $parts = $platform.Split("-")
+    $installerArtifacts += [ordered]@{
+        os = $parts[0]
+        arch = $parts[1]
+        url = "$($BaseUrl.TrimEnd('/'))/$name"
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+        size = (Get-Item -LiteralPath $source).Length
+        filename = $name
+    }
+}
+
 $graphName = "erp-$configurationVersion-graph-$graphVersion.zip"
 $graphArchive = Join-Path $OutputDirectory $graphName
 $graphStage = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-consultant-graph-" + [guid]::NewGuid().ToString("N"))
@@ -94,6 +118,7 @@ finally {
 $manifest = [ordered]@{
     schema_version = 1
     application = [ordered]@{ version = $version; artifacts = $artifacts }
+    installer = [ordered]@{ version = $installerVersion; artifacts = $installerArtifacts }
     graphs = @([ordered]@{
         id = "erp-$configurationVersion"
         name = "1С:ERP Управление предприятием 2"

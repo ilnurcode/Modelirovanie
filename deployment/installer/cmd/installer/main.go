@@ -27,14 +27,29 @@ import (
 )
 
 const (
-	installerVersion = "0.4.2"
+	installerVersion = "0.4.3"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
 type Manifest struct {
 	SchemaVersion int         `json:"schema_version"`
 	Application   Application `json:"application"`
+	Installer     Installer   `json:"installer"`
 	Graphs        []Graph     `json:"graphs"`
+}
+
+type Installer struct {
+	Version   string              `json:"version"`
+	Artifacts []InstallerArtifact `json:"artifacts"`
+}
+
+type InstallerArtifact struct {
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	URL      string `json:"url"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size,omitempty"`
+	Filename string `json:"filename"`
 }
 
 type Application struct {
@@ -67,7 +82,9 @@ type State struct {
 	SchemaVersion       int                   `json:"schema_version"`
 	ActiveApplication   string                `json:"active_application,omitempty"`
 	PreviousApplication string                `json:"previous_application,omitempty"`
+	ActiveInstaller     string                `json:"active_installer,omitempty"`
 	Applications        map[string]Installed  `json:"applications"`
+	Installers           map[string]Installed  `json:"installers"`
 	Graphs              map[string]GraphState `json:"graphs"`
 	UpdatedAt           string                `json:"updated_at"`
 }
@@ -84,6 +101,13 @@ type GraphState struct {
 	ActiveVersion        string `json:"active_version"`
 	Path                 string `json:"path"`
 	Installed            string `json:"installed_at"`
+	PreviousVersion      string                    `json:"previous_version,omitempty"`
+	Versions             map[string]GraphInstalled `json:"versions,omitempty"`
+}
+
+type GraphInstalled struct {
+	Path      string `json:"path"`
+	Installed string `json:"installed_at"`
 }
 
 type logger struct{ file *os.File }
@@ -110,6 +134,8 @@ func run(args []string) error {
 		return rollbackCommand(args[1:])
 	case "remove-graph":
 		return removeGraphCommand(args[1:])
+	case "rollback-graph":
+		return rollbackGraphCommand(args[1:])
 	case "uninstall":
 		return uninstallCommand(args[1:])
 	case "version", "--version", "-version":
@@ -131,6 +157,7 @@ func usage() {
   check         сравнить локальные версии с manifest
   rollback      восстановить предыдущую версию приложения
   remove-graph  удалить выбранный граф
+  rollback-graph восстановить предыдущую версию графа
   uninstall     удалить локальную установку
 
 По умолчанию используется manifest последнего GitHub Release.
@@ -142,7 +169,7 @@ func usage() {
 func menu() error {
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Удалить граф\n6. Удалить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
+		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Управление графами\n6. Удалить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
 		if !in.Scan() { return in.Err() }
 		choice := strings.TrimSpace(in.Text())
 		switch choice {
@@ -153,10 +180,8 @@ func menu() error {
 		case "2": if err := statusCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "3": if err := checkCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "4": if err := rollbackCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
-		case "5":
-			fmt.Print("ID графа: "); if !in.Scan() { return in.Err() }
-			if err := removeGraphCommand([]string{"--graph", strings.TrimSpace(in.Text())}); err != nil { fmt.Println("Ошибка:", err) }
-		case "6": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
+		case "5": if err := graphMenu(in); err != nil { fmt.Println("Ошибка:", err) }
+		case "6": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) } else { return nil }
 		default: fmt.Println("Неизвестный пункт")
 		}
 	}
@@ -214,6 +239,7 @@ func installCommand(args []string) error {
 		g, ok := graphByID(m, id); if !ok { return fmt.Errorf("граф %q отсутствует в manifest", id) }
 		if err := installGraph(root, g, state, base, offline, log); err != nil { return err }
 	}
+	if err := installInstaller(root, m, state, base, offline, log); err != nil { return err }
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := saveState(root, state); err != nil { return err }
 	if state.ActiveApplication != "" { if err := writeLauncher(root, state); err != nil { return err }; if err := writeOSIntegration(root, state); err != nil { return err } }
@@ -229,6 +255,7 @@ func checkCommand(args []string) error {
 	m, _, _, err := loadManifest(*c, log); if err != nil { return err }
 	s, err := loadState(root); if err != nil { return err }
 	fmt.Printf("Приложение: установлено %s, доступно %s\n", valueOr(s.ActiveApplication, "нет"), m.Application.Version)
+	fmt.Printf("Installer: установлен %s, доступен %s\n", valueOr(s.ActiveInstaller, "нет"), m.Installer.Version)
 	for _, g := range m.Graphs { local := "нет"; if x, ok := s.Graphs[g.ID]; ok { local = x.ActiveVersion }; fmt.Printf("Граф %s: установлен %s, доступен %s\n", g.ID, local, g.GraphVersion) }
 	return nil
 }
@@ -238,7 +265,7 @@ func statusCommand(args []string) error {
 	if err := fs.Parse(args); err != nil { return err }
 	root, err := dataDir(c.dataDir); if err != nil { return err }
 	s, err := loadState(root); if err != nil { return err }
-	fmt.Println("Каталог:", root); fmt.Println("Активное приложение:", valueOr(s.ActiveApplication, "не установлено"))
+	fmt.Println("Каталог:", root); fmt.Println("Активное приложение:", valueOr(s.ActiveApplication, "не установлено")); fmt.Println("Активный installer:", valueOr(s.ActiveInstaller, "не установлен"))
 	ids := make([]string, 0, len(s.Graphs)); for id := range s.Graphs { ids = append(ids, id) }; sort.Strings(ids)
 	for _, id := range ids { fmt.Printf("Граф %s: %s\n", id, s.Graphs[id].ActiveVersion) }
 	return nil
@@ -262,9 +289,57 @@ func removeGraphCommand(args []string) error {
 	fs := flag.NewFlagSet("remove-graph", flag.ContinueOnError); c := addCommon(fs, false); id := fs.String("graph", "", "ID графа")
 	if err := fs.Parse(args); err != nil { return err }; if !safeSegment(*id) { return errors.New("некорректный ID графа") }
 	root, err := dataDir(c.dataDir); if err != nil { return err }; s, err := loadState(root); if err != nil { return err }
-	g, ok := s.Graphs[*id]; if !ok { return fmt.Errorf("граф %q не установлен", *id) }
-	if !within(filepath.Join(root, "graphs"), g.Path) { return errors.New("путь графа выходит из каталога установки") }
-	if err := os.RemoveAll(g.Path); err != nil { return err }; delete(s.Graphs, *id); s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); return saveState(root, s)
+	if _, ok := s.Graphs[*id]; !ok { return fmt.Errorf("граф %q не установлен", *id) }
+	target := filepath.Join(root, "graphs", *id); if !within(filepath.Join(root, "graphs"), target) { return errors.New("путь графа выходит из каталога установки") }
+	if err := os.RemoveAll(target); err != nil { return err }; delete(s.Graphs, *id); s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); return saveState(root, s)
+}
+
+func rollbackGraphCommand(args []string) error {
+	fs := flag.NewFlagSet("rollback-graph", flag.ContinueOnError); c := addCommon(fs, false); id := fs.String("graph", "", "ID графа")
+	if err := fs.Parse(args); err != nil { return err }; if !safeSegment(*id) { return errors.New("некорректный ID графа") }
+	root, err := dataDir(c.dataDir); if err != nil { return err }; s, err := loadState(root); if err != nil { return err }
+	g, ok := s.Graphs[*id]; if !ok { return fmt.Errorf("граф %q не установлен", *id) }; if g.PreviousVersion == "" { return errors.New("предыдущая версия графа отсутствует") }
+	previous, ok := g.Versions[g.PreviousVersion]; if !ok || !within(filepath.Join(root, "graphs"), previous.Path) { return errors.New("предыдущая версия графа отсутствует на диске") }
+	g.ActiveVersion, g.PreviousVersion = g.PreviousVersion, g.ActiveVersion; g.Path = previous.Path; g.Installed = previous.Installed; s.Graphs[*id] = g; s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); return saveState(root, s)
+}
+
+func graphMenu(in *bufio.Scanner) error {
+	for {
+		fmt.Print("\n--- Управление графами ---\n1. Показать установленные\n2. Скачать или обновить\n3. Откатить версию\n4. Удалить граф со всеми версиями\n0. Назад\n\nВыберите действие: ")
+		if !in.Scan() { return in.Err() }
+		switch strings.TrimSpace(in.Text()) {
+		case "0": return nil
+		case "1": if err := printInstalledGraphs(); err != nil { fmt.Println("Ошибка:", err) }
+		case "2": if err := installGraphsFromMenu(in); err != nil { fmt.Println("Ошибка:", err) }
+		case "3":
+			id, err := chooseInstalledGraph(in); if err == nil { err = rollbackGraphCommand([]string{"--graph", id}) }; if err != nil { fmt.Println("Ошибка:", err) } else { fmt.Println("Предыдущая версия графа активирована") }
+		case "4":
+			id, err := chooseInstalledGraph(in); if err == nil { fmt.Print("Удалить граф и все его версии? [y/N]: "); if !in.Scan() { return in.Err() }; if !strings.EqualFold(strings.TrimSpace(in.Text()), "y") && !strings.EqualFold(strings.TrimSpace(in.Text()), "yes") { fmt.Println("Удаление отменено"); continue }; err = removeGraphCommand([]string{"--graph", id}) }; if err != nil { fmt.Println("Ошибка:", err) } else { fmt.Println("Граф удалён") }
+		default: fmt.Println("Неизвестный пункт")
+		}
+	}
+}
+
+func printInstalledGraphs() error {
+	root, err := dataDir(""); if err != nil { return err }; s, err := loadState(root); if err != nil { return err }
+	ids := sortedGraphIDs(s); if len(ids) == 0 { fmt.Println("Графы не установлены"); return nil }
+	for i, id := range ids { g := s.Graphs[id]; versions := make([]string, 0, len(g.Versions)); for version := range g.Versions { versions = append(versions, version) }; sort.Strings(versions); fmt.Printf("[%d] %s (%s)\n    Активна: %s; установлены: %s\n", i+1, g.Name, id, g.ActiveVersion, strings.Join(versions, ", ")) }
+	return nil
+}
+
+func sortedGraphIDs(s *State) []string { ids := make([]string, 0, len(s.Graphs)); for id := range s.Graphs { ids = append(ids, id) }; sort.Strings(ids); return ids }
+
+func chooseInstalledGraph(in *bufio.Scanner) (string, error) {
+	root, err := dataDir(""); if err != nil { return "", err }; s, err := loadState(root); if err != nil { return "", err }; ids := sortedGraphIDs(s); if len(ids) == 0 { return "", errors.New("графы не установлены") }
+	for i, id := range ids { g := s.Graphs[id]; fmt.Printf("[%d] %s — %s\n", i+1, g.Name, g.ActiveVersion) }; fmt.Print("Выберите номер: "); if !in.Scan() { return "", in.Err() }; var selected int; if _, err := fmt.Sscanf(strings.TrimSpace(in.Text()), "%d", &selected); err != nil || selected < 1 || selected > len(ids) { return "", errors.New("некорректный номер") }; return ids[selected-1], nil
+}
+
+func installGraphsFromMenu(in *bufio.Scanner) error {
+	args, err := askSource(in); if err != nil { return err }; fs := flag.NewFlagSet("graph-install", flag.ContinueOnError); c := addCommon(fs, true); if err := fs.Parse(args); err != nil { return err }
+	root, err := dataDir(""); if err != nil { return err }; log, err := openLog(root); if err != nil { return err }; defer log.close(); m, base, offline, err := loadManifest(*c, log); if err != nil { return err }; s, err := loadState(root); if err != nil { return err }; if s.ActiveApplication == "" { return errors.New("сначала установите приложение") }
+	for i, g := range m.Graphs { installed := "не установлен"; if current, ok := s.Graphs[g.ID]; ok { installed = current.ActiveVersion }; fmt.Printf("[%d] %s %s — установлена %s, доступна %s\n", i+1, g.Name, g.ConfigurationVersion, installed, g.GraphVersion) }; fmt.Print("Введите номера через запятую или Enter для всех: "); if !in.Scan() { return in.Err() }
+	selected := map[string]bool{}; answer := strings.TrimSpace(in.Text()); if answer == "" { for _, g := range m.Graphs { selected[g.ID] = true } } else { for item := range csvSet(answer) { var n int; if _, err := fmt.Sscanf(item, "%d", &n); err != nil || n < 1 || n > len(m.Graphs) { return fmt.Errorf("некорректный номер %q", item) }; selected[m.Graphs[n-1].ID] = true } }
+	for id := range selected { g, _ := graphByID(m, id); if err := installGraph(root, g, s, base, offline, log); err != nil { return err } }; if err := installInstaller(root, m, s, base, offline, log); err != nil { return err }; s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); if err := saveState(root, s); err != nil { return err }; return writeLauncher(root, s)
 }
 
 func uninstallCommand(args []string) error {
@@ -275,6 +350,15 @@ func uninstallCommand(args []string) error {
 	if _, err := os.Stat(filepath.Join(root, "config", "installed.json")); err != nil { return errors.New("installed.json не найден; удаление отменено") }
 	if !*yes { fmt.Printf("Удалить %s? [y/N]: ", root); var answer string; fmt.Scanln(&answer); if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") { return errors.New("удаление отменено") } }
 	if err := removeOSIntegration(root); err != nil { return err }
+	return removeInstallRoot(root)
+}
+
+func removeInstallRoot(root string) error {
+	executable, _ := os.Executable()
+	if runtime.GOOS == "windows" && within(root, executable) {
+		script := "Start-Sleep -Milliseconds 800; Remove-Item -LiteralPath " + psQuote(root) + " -Recurse -Force"
+		return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script)).Start()
+	}
 	return os.RemoveAll(root)
 }
 
@@ -295,14 +379,45 @@ func installApplication(root string, m Manifest, s *State, base string, offline 
 	return nil
 }
 
+func installInstaller(root string, m Manifest, s *State, base string, offline bool, log *logger) error {
+	osName, arch := platform(); var artifact *InstallerArtifact
+	for i := range m.Installer.Artifacts { if m.Installer.Artifacts[i].OS == osName && m.Installer.Artifacts[i].Arch == arch { artifact = &m.Installer.Artifacts[i]; break } }
+	if artifact == nil { return fmt.Errorf("installer %s/%s не поддерживается manifest", osName, arch) }
+	dest := filepath.Join(root, "installer", m.Installer.Version, artifact.Filename)
+	if _, err := os.Stat(dest); errors.Is(err, os.ErrNotExist) {
+		if err := fetchVerifyFile(root, artifact.URL, base, offline, "installer", artifact.SHA256, artifact.Size, dest, log); err != nil { return err }
+	}
+	s.ActiveInstaller = m.Installer.Version
+	s.Installers[m.Installer.Version] = Installed{Path: filepath.Dir(dest), Executable: artifact.Filename, Installed: time.Now().UTC().Format(time.RFC3339)}
+	return nil
+}
+
 func installGraph(root string, g Graph, s *State, base string, offline bool, log *logger) error {
 	if !safeSegment(g.ID) || !safeSegment(g.ConfigurationVersion) || !safeSegment(g.GraphVersion) { return errors.New("некорректный идентификатор графа") }
 	active := s.ActiveApplication; if active == "" { return errors.New("сначала установите приложение") }
 	if compareVersion(active, g.MinimumApplicationVersion) < 0 { return fmt.Errorf("граф %s требует приложение >= %s", g.ID, g.MinimumApplicationVersion) }
 	dest := filepath.Join(root, "graphs", g.ID, g.ConfigurationVersion, g.GraphVersion)
 	if _, err := os.Stat(dest); errors.Is(err, os.ErrNotExist) { if err := fetchVerifyExtract(root, g.URL, base, offline, "graphs", g.SHA256, g.Size, dest, log); err != nil { return err } }
-	s.Graphs[g.ID] = GraphState{Name:g.Name, ConfigurationVersion:g.ConfigurationVersion, ActiveVersion:g.GraphVersion, Path:dest, Installed:time.Now().UTC().Format(time.RFC3339)}
+	now := time.Now().UTC().Format(time.RFC3339); current := s.Graphs[g.ID]
+	if current.Versions == nil { current.Versions = map[string]GraphInstalled{} }
+	if current.ActiveVersion != "" && current.Path != "" { current.Versions[current.ActiveVersion] = GraphInstalled{Path:current.Path, Installed:current.Installed} }
+	if current.ActiveVersion != "" && current.ActiveVersion != g.GraphVersion { current.PreviousVersion = current.ActiveVersion }
+	current.Name = g.Name; current.ConfigurationVersion = g.ConfigurationVersion; current.ActiveVersion = g.GraphVersion; current.Path = dest; current.Installed = now
+	current.Versions[g.GraphVersion] = GraphInstalled{Path:dest, Installed:now}; s.Graphs[g.ID] = current
 	return nil
+}
+
+func fetchVerifyFile(root, rawURL, base string, offline bool, kind, wantHash string, wantSize int64, dest string, log *logger) error {
+	tmpDir := filepath.Join(root, "temp"); if err := os.MkdirAll(tmpDir, 0o755); err != nil { return err }
+	tmp, err := os.CreateTemp(tmpDir, "download-*"); if err != nil { return err }; name := tmp.Name(); tmp.Close(); defer os.Remove(name)
+	if err := fetch(rawURL, base, offline, kind, name); err != nil { return err }
+	gotHash, size, err := fileHash(name); if err != nil { return err }
+	if wantSize > 0 && size != wantSize { return fmt.Errorf("размер installer: ожидалось %d, получено %d", wantSize, size) }
+	if !strings.EqualFold(gotHash, wantHash) { return fmt.Errorf("SHA-256 installer не совпал") }
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil { return err }
+	if err := os.Chmod(name, 0o755); err != nil { return err }
+	if err := renameWithRetry(name, dest); err != nil { return err }
+	log.info("SHA-256 подтвержден для " + filepath.Base(rawURL)); return nil
 }
 
 func fetchVerifyExtract(root, rawURL, base string, offline bool, kind, wantHash string, wantSize int64, dest string, log *logger) error {
@@ -388,13 +503,18 @@ func manifestSource(c commonFlags) (commonFlags, error) {
 func validateManifest(m Manifest) error {
 	if !safeSegment(m.Application.Version) { return errors.New("manifest: некорректная версия приложения") }
 	for _, a := range m.Application.Artifacts { if a.OS == "" || a.Arch == "" || a.URL == "" || a.Executable == "" || !validHash(a.SHA256) { return errors.New("manifest: неполный артефакт приложения") }; if _, err := safeJoin("root", a.Executable); err != nil { return errors.New("manifest: небезопасный путь executable") } }
+	if !safeSegment(m.Installer.Version) { return errors.New("manifest: некорректная версия installer") }
+	for _, a := range m.Installer.Artifacts { if a.OS == "" || a.Arch == "" || a.URL == "" || !safeSegment(a.Filename) || !validHash(a.SHA256) { return errors.New("manifest: неполный артефакт installer") } }
 	seen := map[string]bool{}; for _, g := range m.Graphs { if !safeSegment(g.ID) || seen[g.ID] || g.URL == "" || !validHash(g.SHA256) { return fmt.Errorf("manifest: некорректный граф %q", g.ID) }; seen[g.ID] = true }
 	return nil
 }
 
 func loadState(root string) (*State, error) {
-	s := &State{SchemaVersion:1, Applications:map[string]Installed{}, Graphs:map[string]GraphState{}}
-	data, err := os.ReadFile(filepath.Join(root, "config", "installed.json")); if errors.Is(err, os.ErrNotExist) { return s, nil }; if err != nil { return nil, err }; if err := json.Unmarshal(data, s); err != nil { return nil, err }; if s.Applications == nil { s.Applications = map[string]Installed{} }; if s.Graphs == nil { s.Graphs = map[string]GraphState{} }; return s, nil
+	s := &State{SchemaVersion:1, Applications:map[string]Installed{}, Installers:map[string]Installed{}, Graphs:map[string]GraphState{}}
+	data, err := os.ReadFile(filepath.Join(root, "config", "installed.json")); if errors.Is(err, os.ErrNotExist) { return s, nil }; if err != nil { return nil, err }; if err := json.Unmarshal(data, s); err != nil { return nil, err }
+	if s.Applications == nil { s.Applications = map[string]Installed{} }; if s.Installers == nil { s.Installers = map[string]Installed{} }; if s.Graphs == nil { s.Graphs = map[string]GraphState{} }
+	for id, graph := range s.Graphs { if graph.Versions == nil { graph.Versions = map[string]GraphInstalled{} }; if graph.ActiveVersion != "" && graph.Path != "" { graph.Versions[graph.ActiveVersion] = GraphInstalled{Path:graph.Path, Installed:graph.Installed} }; s.Graphs[id] = graph }
+	return s, nil
 }
 
 func saveState(root string, s *State) error {
@@ -407,9 +527,11 @@ func saveState(root string, s *State) error {
 
 func writeLauncher(root string, s *State) error {
 	a, ok := s.Applications[s.ActiveApplication]; if !ok { return errors.New("активное приложение отсутствует") }; exe, err := safeJoin(a.Path, a.Executable); if err != nil { return err }
+	i, ok := s.Installers[s.ActiveInstaller]; if !ok { return errors.New("активный installer отсутствует") }; installer, err := safeJoin(i.Path, i.Executable); if err != nil { return err }
 	if !within(filepath.Join(root, "app"), a.Path) { return errors.New("путь приложения выходит из каталога установки") }
-	if runtime.GOOS == "windows" { body := "@echo off\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755) }
-	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
+	if !within(filepath.Join(root, "installer"), i.Path) { return errors.New("путь installer выходит из каталога установки") }
+	if runtime.GOOS == "windows" { body := "@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_INSTALL_ROOT="+root+"\"\r\nif not \"%~1\"==\"\" goto service\r\necho.\r\necho 1. Запустить 1C-Consultant\r\necho 2. Управление установкой и графами\r\necho 0. Выход\r\nset /p choice=Выберите действие: \r\nif \"%choice%\"==\"2\" (\""+installer+"\" & goto end)\r\nif \"%choice%\"==\"0\" goto end\r\n:service\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n:end\r\nendlocal\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755) }
+	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nif [ \"$#\" -eq 0 ]; then\n  printf '\\n1. Запустить 1C-Consultant\\n2. Управление установкой и графами\\n0. Выход\\nВыберите действие: '\n  read -r choice\n  case \"$choice\" in\n    2) exec "+shellQuote(installer)+" ;;\n    0) exit 0 ;;\n  esac\nfi\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755); err != nil { return err }
 	if runtime.GOOS == "darwin" { return os.WriteFile(filepath.Join(root, "1C-Consultant.command"), []byte(body), 0o755) }
 	return nil
@@ -460,6 +582,7 @@ func shellQuote(value string) string { return "'"+strings.ReplaceAll(value, "'",
 
 func dataDir(override string) (string, error) {
 	if override != "" { return filepath.Abs(override) }
+	if managed := os.Getenv("CONSULTANT_INSTALL_ROOT"); managed != "" { return filepath.Abs(managed) }
 	switch runtime.GOOS { case "windows": base := os.Getenv("LOCALAPPDATA"); if base == "" { return "", errors.New("LOCALAPPDATA не задан") }; return filepath.Join(base, "1C-Consultant"), nil; case "darwin": home, err := os.UserHomeDir(); if err != nil { return "", err }; return filepath.Join(home, "Library", "Application Support", "1C-Consultant"), nil; default: if x := os.Getenv("XDG_DATA_HOME"); x != "" { return filepath.Join(x, "1c-consultant"), nil }; home, err := os.UserHomeDir(); if err != nil { return "", err }; return filepath.Join(home, ".local", "share", "1c-consultant"), nil }
 }
 

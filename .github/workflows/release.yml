@@ -155,6 +155,12 @@ jobs:
             throw "Graph database SHA-256 mismatch."
           }
 
+      - name: Build installer binaries
+        shell: pwsh
+        run: |
+          ./deployment/scripts/build-installers.ps1 -OutputDirectory release
+          python deployment/scripts/package_installers.py release
+
       - name: Build application manifests and graph
         shell: pwsh
         env:
@@ -172,12 +178,6 @@ jobs:
             -GraphDatabaseSha256 $env:GRAPH_DATABASE_SHA256 `
             -Python python `
             -PythonArguments @()
-
-      - name: Build installer binaries
-        shell: pwsh
-        run: |
-          ./deployment/scripts/build-installers.ps1 -OutputDirectory release
-          python deployment/scripts/package_installers.py release
 
       - name: Build offline bundle
         shell: pwsh

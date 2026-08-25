@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -86,4 +87,32 @@ func TestWriteAndRemoveMacOSApp(t *testing.T) {
 func TestExternalAppManaged(t *testing.T) {
 	t.Setenv("CONSULTANT_EXTERNAL_APP", "1")
 	if !externalAppManaged() { t.Fatal("external app mode was not detected") }
+}
+
+func TestInstallerIsPersistedForFutureManagement(t *testing.T) {
+	root := t.TempDir(); bundle := filepath.Join(root, "bundle"); sourceDir := filepath.Join(bundle, "installer")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil { t.Fatal(err) }
+	osName, arch := platform(); filename := "installer"; if osName == "windows" { filename += ".exe" }; source := filepath.Join(sourceDir, filename)
+	if err := os.WriteFile(source, []byte("installer-binary"), 0o755); err != nil { t.Fatal(err) }; hash, size, err := fileHash(source); if err != nil { t.Fatal(err) }
+	m := Manifest{Installer: Installer{Version:"0.4.3", Artifacts:[]InstallerArtifact{{OS:osName, Arch:arch, URL:filename, SHA256:hash, Size:size, Filename:filename}}}}
+	s := &State{Installers:map[string]Installed{}}
+	if err := installInstaller(root, m, s, bundle, true, nil); err != nil { t.Fatal(err) }
+	installed := s.Installers["0.4.3"]; if s.ActiveInstaller != "0.4.3" { t.Fatal("installer was not activated") }; if _, err := os.Stat(filepath.Join(installed.Path, installed.Executable)); err != nil { t.Fatal(err) }
+}
+
+func TestGraphRollbackAndRemovalTrackAllVersions(t *testing.T) {
+	root := t.TempDir(); t.Setenv("CONSULTANT_INSTALL_ROOT", root); id := "erp-test"; v1 := filepath.Join(root, "graphs", id, "cfg", "1"); v2 := filepath.Join(root, "graphs", id, "cfg", "2")
+	if err := os.MkdirAll(v1, 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(v2, 0o755); err != nil { t.Fatal(err) }
+	s := &State{SchemaVersion:1, Applications:map[string]Installed{}, Installers:map[string]Installed{}, Graphs:map[string]GraphState{id:{Name:"ERP", ActiveVersion:"2", PreviousVersion:"1", Path:v2, Versions:map[string]GraphInstalled{"1":{Path:v1}, "2":{Path:v2}}}}}
+	if err := saveState(root, s); err != nil { t.Fatal(err) }; if err := rollbackGraphCommand([]string{"--graph", id}); err != nil { t.Fatal(err) }
+	s, err := loadState(root); if err != nil { t.Fatal(err) }; if s.Graphs[id].ActiveVersion != "1" || s.Graphs[id].PreviousVersion != "2" { t.Fatal("graph rollback failed") }
+	if err := removeGraphCommand([]string{"--graph", id}); err != nil { t.Fatal(err) }; if _, err := os.Stat(filepath.Join(root, "graphs", id)); !errors.Is(err, os.ErrNotExist) { t.Fatal("graph versions were not removed") }
+}
+
+func TestLauncherKeepsInstallerManagementAvailable(t *testing.T) {
+	root := t.TempDir(); appDir := filepath.Join(root, "app", "1"); installerDir := filepath.Join(root, "installer", "1"); if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(installerDir, 0o755); err != nil { t.Fatal(err) }
+	appName, installerName := "consultant", "installer"; launcherName := "1c-consultant"; if runtime.GOOS == "windows" { appName += ".exe"; installerName += ".exe"; launcherName = "1C-Consultant.cmd" }
+	if err := os.WriteFile(filepath.Join(appDir, appName), []byte("app"), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(installerDir, installerName), []byte("installer"), 0o755); err != nil { t.Fatal(err) }
+	s := &State{ActiveApplication:"1", ActiveInstaller:"1", Applications:map[string]Installed{"1":{Path:appDir, Executable:appName}}, Installers:map[string]Installed{"1":{Path:installerDir, Executable:installerName}}}
+	if err := writeLauncher(root, s); err != nil { t.Fatal(err) }; body, err := os.ReadFile(filepath.Join(root, launcherName)); if err != nil { t.Fatal(err) }; text := string(body); if !strings.Contains(text, "CONSULTANT_INSTALL_ROOT") || !strings.Contains(text, installerName) { t.Fatal("management installer is absent from launcher") }
 }
