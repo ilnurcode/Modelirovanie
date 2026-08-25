@@ -1,0 +1,14 @@
+interface:
+  display_name: "ERP Requirements Modeling"
+  short_description: "Моделирует ТЗ и уточнения через граф ERP"
+  default_prompt: "Use $erp-requirements-modeling to turn this specification into a traceable ERP project model."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "newagent_1c"
+      description: "NewAgent evidence graph and versioned project state"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

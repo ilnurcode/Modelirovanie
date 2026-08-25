@@ -1,29 +1,33 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import gzip
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from consultant_cli.domain.models import Project, now_iso
-from consultant_cli.infrastructure.store import RepositoryPaths
+from consultant_cli.infrastructure.store import RepositoryPaths, atomic_write_json
 
 
 def _normalized(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("➜", "→").strip().casefold())
 
 
-def _tokens(value: str) -> set[str]:
+def _tokens(value: str, limit: int = 64) -> set[str]:
     stop = {
         "бизнес", "процесс", "создать", "сделать", "нужно", "через", "этого",
         "который", "пользователь", "инструкция", "схема", "режим",
     }
-    return {
+    counts = Counter(
         token
         for token in re.findall(r"[0-9a-zа-яё]+", value.casefold())
         if len(token) >= 4 and token not in stop
-    }
+    )
+    ranked = sorted(counts, key=lambda token: (-counts[token], -len(token), token))
+    return set(ranked[:limit])
 
 
 def _is_erp(value: str) -> bool:
@@ -43,6 +47,298 @@ class ModelerReviewService:
         self.semantic_graph_path = self.graphs / "1c_erp_2_5_semantic_graph.json"
         self.search_index_path = self.graphs / "search-index.ndjson.gz"
         self.metadata_manifest_path = paths.root / "metadata" / "index" / "configuration.json"
+        self._route_payload_cache: dict[str, Any] | None = None
+
+    def _route_payload(self) -> dict[str, Any]:
+        if self._route_payload_cache is None:
+            try:
+                self._route_payload_cache = json.loads(
+                    self.route_graph_path.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, json.JSONDecodeError):
+                self._route_payload_cache = {}
+        return self._route_payload_cache
+
+    @staticmethod
+    def _route_segments(value: str) -> list[str]:
+        return [segment.strip() for segment in value.split("→") if segment.strip()]
+
+    @staticmethod
+    def _route_words(value: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[0-9a-zа-яё]+", value.casefold())
+            if len(token) >= 4 and token not in {"документ", "документы"}
+        }
+
+    @staticmethod
+    def _route_overlap(left: set[str], right: set[str]) -> int:
+        """Count exact or conservative Russian-inflection word matches."""
+        return sum(
+            1
+            for word in left
+            if any(
+                word == candidate
+                or (
+                    len(word) >= 5
+                    and len(candidate) >= 5
+                    and word[:5] == candidate[:5]
+                )
+                for candidate in right
+            )
+        )
+
+    def normalize_ui_paths(
+        self, project: Project, result: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        """Replace shortened writer paths with exact routes from Modeler.
+
+        The route graph is an exact-release derived metadata artifact.  A path
+        is repaired only when the requested section and command/form yield a
+        deterministic best route.  The selected route node is persisted in
+        ``sources`` and linked to the step.
+        """
+        routes = self._route_payload()
+        if not routes or str(routes.get("release") or "") != project.configuration.release:
+            return []
+        route_nodes = routes.get("nodes", {})
+        values = route_nodes.values() if isinstance(route_nodes, dict) else route_nodes
+        nodes = [node for node in values or [] if isinstance(node, dict)]
+        sources = result.setdefault("sources", [])
+        if not isinstance(sources, list):
+            return []
+        source_ids = {
+            str(source.get("id") or "")
+            for source in sources
+            if isinstance(source, dict)
+        }
+        preferred_22 = any(
+            str(document.get("node_id") or "").endswith("2_2")
+            for branch in result.get("document_flow", []) or []
+            if isinstance(branch, dict)
+            for document in branch.get("documents", []) or []
+            if isinstance(document, dict)
+        )
+        repairs: list[dict[str, str]] = []
+
+        def source_for(node: dict[str, Any]) -> str:
+            route_id = str(node.get("id") or "")
+            source_id = f"modeler-route:{route_id}"
+            if source_id not in source_ids:
+                properties = node.get("properties", {}) or {}
+                sources.append(
+                    {
+                        "id": source_id,
+                        "title": f"Маршрут Modeler: {properties.get('path') or node.get('label')}",
+                        "local_ref": "1c_modeler_upgrade/graphs/1c_erp_2_5_route_graph.json",
+                        "url": "",
+                        "product": project.configuration.product,
+                        "release": project.configuration.release,
+                        "verification_status": "verified_metadata",
+                        "notes": (
+                            "Точный узел производного route-графа Modeler; исходный "
+                            f"XML-путь: {properties.get('source_path') or 'не указан'}."
+                        ),
+                        "source_ref": str(properties.get("source_path") or route_id),
+                        "node_id": route_id,
+                        "edge_ids": [],
+                    }
+                )
+                source_ids.add(source_id)
+            return source_id
+
+        def best_route(
+            requested_path: str,
+            form: str,
+            requested_label: str | None = None,
+        ) -> dict[str, Any] | None:
+            requested_segments = self._route_segments(requested_path)
+            requested_first = (
+                _normalized(requested_segments[0]) if requested_segments else ""
+            )
+            requested_last = requested_label or (
+                requested_segments[-1] if requested_segments else ""
+            )
+            requested_words = self._route_words(requested_last)
+            middle_words = self._route_words(" ".join(requested_segments[1:-1]))
+            all_form_labels = [item.strip() for item in re.findall(r"«([^»]+)»", form)]
+            label_scores = [
+                self._route_overlap(self._route_words(item), requested_words)
+                for item in all_form_labels
+            ]
+            best_label_score = max(label_scores, default=0)
+            form_labels = [
+                item
+                for item, score in zip(all_form_labels, label_scores)
+                if score == best_label_score
+            ] if best_label_score else all_form_labels
+            form_words = self._route_words(" ".join(form_labels))
+            form_identity = form.casefold().strip()
+            for russian_prefix, metadata_prefix in {
+                "документ.": "document.",
+                "справочник.": "catalog.",
+                "отчет.": "report.",
+                "обработка.": "dataprocessor.",
+            }.items():
+                if form_identity.startswith(russian_prefix):
+                    form_identity = metadata_prefix + form_identity[len(russian_prefix):]
+                    break
+            technical_tail = form.split(".")[-1].casefold() if "." in form else ""
+            ranked: list[tuple[int, int, str, dict[str, Any]]] = []
+            for node in nodes:
+                properties = node.get("properties", {}) or {}
+                candidate_path = str(properties.get("path") or "")
+                candidate_segments = self._route_segments(candidate_path)
+                if not candidate_segments or "служебные подсистемы" in candidate_path.casefold():
+                    continue
+                candidate_first = _normalized(candidate_segments[0])
+                candidate_label = str(node.get("label") or candidate_segments[-1])
+                candidate_words = self._route_words(candidate_label)
+                serialized = json.dumps(node, ensure_ascii=False).casefold()
+                candidate_technical = str(properties.get("technical_name") or "").casefold()
+                technical_parts = candidate_technical.split(".")
+                candidate_object_name = (
+                    technical_parts[1] if len(technical_parts) >= 2 else ""
+                )
+                human_object_names = {
+                    re.sub(r"[^0-9a-zа-яё]+", "", item.casefold())
+                    for item in form_labels
+                }
+                exact_object_match = bool(
+                    form_identity
+                    and candidate_technical.startswith(form_identity + ".")
+                    or (
+                        candidate_object_name
+                        and candidate_object_name in human_object_names
+                        and technical_parts[0] in {"document", "catalog"}
+                    )
+                )
+                technical_match = bool(
+                    exact_object_match
+                    or (technical_tail and technical_tail in candidate_technical)
+                )
+                requested_overlap = self._route_overlap(
+                    requested_words, candidate_words
+                )
+                form_overlap = self._route_overlap(form_words, candidate_words)
+                overlap = self._route_overlap(
+                    requested_words | form_words, candidate_words
+                )
+                exact_label_match = (
+                    _normalized(candidate_label) == _normalized(requested_last)
+                )
+                if not technical_match and not exact_label_match and max(
+                    requested_overlap, form_overlap
+                ) < 2:
+                    continue
+                score = 0
+                if candidate_first == requested_first:
+                    score += 80
+                elif {
+                    candidate_first,
+                    requested_first,
+                } <= {"администрирование", "нси и администрирование"}:
+                    score += 70
+                if exact_label_match:
+                    score += 120
+                if any(
+                    _normalized(candidate_label) == _normalized(form_label)
+                    for form_label in form_labels
+                ):
+                    score += 150
+                score += overlap * 30
+                score += self._route_overlap(
+                    middle_words, self._route_words(candidate_path)
+                ) * 12
+                if exact_object_match:
+                    # A list command of the exact catalog/document is stronger
+                    # than a textual label overlap.  This prevents similarly
+                    # named reports from winning (for example, a report about
+                    # internal consumption instead of the document list).
+                    score += 180
+                elif technical_match:
+                    score += 45
+                if preferred_22 and "заказ" in requested_last.casefold() and "производ" in requested_last.casefold():
+                    if "2.2" in candidate_path or "2_2" in serialized:
+                        score += 45
+                if "регламент" in candidate_path.casefold() or "внеоборот" in candidate_path.casefold():
+                    score -= 35
+                if "базовая" in str(properties.get("source_path") or "").casefold():
+                    # ERP contains duplicate routes inherited from basic
+                    # subsystems.  Prefer the full ERP workplace route, e.g.
+                    # ``Продажи → Оптовые продажи`` over
+                    # ``Продажи → Ведение заказов клиентов``.
+                    score -= 90
+                if score < 45:
+                    continue
+                ranked.append((score, -len(candidate_segments), candidate_path, node))
+            if not ranked:
+                return None
+            ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+            return ranked[0][3]
+
+        for step in result.get("steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            current = str(step.get("ui_path") or "").strip()
+            form = str(step.get("form") or "")
+            if not current or current.casefold().startswith("не применяется"):
+                continue
+            requested_segments = self._route_segments(current)
+            labels: list[str] = []
+            if requested_segments and "/" in requested_segments[-1]:
+                labels = [item.strip() for item in requested_segments[-1].split("/") if item.strip()]
+            selected_nodes: list[dict[str, Any]] = []
+            declared_paths = [
+                re.sub(r"^(?:затем|далее)\s+", "", item.strip(), flags=re.IGNORECASE)
+                for item in current.split(";")
+                if item.strip()
+            ]
+            if len(declared_paths) > 1:
+                for declared_path in declared_paths:
+                    selected = best_route(declared_path, form)
+                    if selected is not None:
+                        selected_nodes.append(selected)
+                if len(selected_nodes) != len(declared_paths):
+                    selected_nodes = []
+            elif labels:
+                prefix = " → ".join(requested_segments[:-1])
+                for label in labels:
+                    selected = best_route(prefix + " → " + label, form, label)
+                    if selected is not None:
+                        selected_nodes.append(selected)
+            else:
+                selected = best_route(current, form)
+                if selected is not None:
+                    selected_nodes.append(selected)
+            if not selected_nodes or (labels and len(selected_nodes) != len(labels)):
+                continue
+            exact_paths = list(
+                dict.fromkeys(
+                    str(node.get("properties", {}).get("path") or "")
+                    for node in selected_nodes
+                )
+            )
+            exact_paths = [path for path in exact_paths if path]
+            if not exact_paths:
+                continue
+            canonical = "; ".join(exact_paths)
+            if canonical != current:
+                step["ui_path"] = canonical
+                repairs.append(
+                    {
+                        "step_id": str(step.get("id") or ""),
+                        "from": current,
+                        "to": canonical,
+                    }
+                )
+            evidence_refs = step.setdefault("evidence_refs", [])
+            if isinstance(evidence_refs, list):
+                for node in selected_nodes:
+                    source_id = source_for(node)
+                    if source_id not in evidence_refs:
+                        evidence_refs.append(source_id)
+        return repairs
 
     def context(self, project: Project, query: str, per_graph: int = 4) -> str:
         """Return compact, ranked evidence candidates from all Modeler graphs."""
@@ -51,6 +347,32 @@ class ModelerReviewService:
                 "MODELЕР НЕДОСТУПЕН: компактный индекс графов не построен. "
                 "Не использовать графы как доказательство."
             )
+        index_stat = self.search_index_path.stat()
+        cache_key = hashlib.sha256(
+            "\0".join(
+                (
+                    project.configuration.product,
+                    project.configuration.release,
+                    query,
+                    str(per_graph),
+                    str(index_stat.st_size),
+                    str(index_stat.st_mtime_ns),
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        cache_path = (
+            self.paths.results
+            / project.project_id
+            / "agent_artifacts"
+            / f"modeler-context-{cache_key}.json"
+        )
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached.get("context"), str):
+                    return cached["context"]
+            except (OSError, json.JSONDecodeError):
+                pass
         tokens = _tokens(query)
         ranked: dict[str, list[tuple[int, dict[str, Any]]]] = {
             "route": [], "object": [], "semantic": [], "source": []
@@ -95,9 +417,18 @@ class ModelerReviewService:
                 self._context_record(project, graph, record, score)
                 for score, record in selected
             ]
-        return "Кандидаты из всех графов 1C Modeler:\n" + json.dumps(
+        context = "Кандидаты из всех графов 1C Modeler:\n" + json.dumps(
             payload, ensure_ascii=False, indent=2
         )
+        atomic_write_json(
+            cache_path,
+            {
+                "schema_version": 1,
+                "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+                "context": context,
+            },
+        )
+        return context
 
     def _context_record(
         self, project: Project, graph: str, record: dict[str, Any], score: int
@@ -112,12 +443,13 @@ class ModelerReviewService:
             local_ref = exact_xml.relative_to(self.paths.root).as_posix()
         else:
             status = "inferred"
-            local_ref = {
+            candidate_ref = {
                 "source": "1c_modeler_upgrade/1c_erp_2_5_source_graph.json",
                 "object": "1c_modeler_upgrade/graphs/1c_erp_2_5_object_graph.json",
                 "route": "1c_modeler_upgrade/graphs/1c_erp_2_5_route_graph.json",
                 "semantic": "1c_modeler_upgrade/graphs/1c_erp_2_5_semantic_graph.json",
             }[graph]
+            local_ref = candidate_ref if (self.paths.root / candidate_ref).is_file() else ""
         return {
             "score": score,
             "id": record.get("id"),
@@ -192,7 +524,7 @@ class ModelerReviewService:
 
         try:
             manifest = json.loads(self.manifest_path.read_text(encoding="utf-8-sig"))
-            routes = json.loads(self.route_graph_path.read_text(encoding="utf-8-sig"))
+            routes = self._route_payload()
         except (OSError, json.JSONDecodeError) as exc:
             report["verdict"] = "error"
             report["warnings"].append(f"Не удалось прочитать граф Modeler: {exc}")
@@ -273,7 +605,11 @@ class ModelerReviewService:
             elif not ui_path or "не подтверж" in ui_path.casefold():
                 check["reason"] = "Точный путь не заявлен в инструкции."
             else:
-                matches = by_path.get(_normalized(ui_path), [])
+                declared_paths = [
+                    item.strip() for item in ui_path.split(";") if item.strip()
+                ]
+                matches_by_path = [by_path.get(_normalized(item), []) for item in declared_paths]
+                matches = [item for group in matches_by_path for item in group]
                 check["matched_routes"] = [
                     {
                         "id": str(item.get("id") or ""),
@@ -282,17 +618,12 @@ class ModelerReviewService:
                     }
                     for item in matches
                 ]
-                accessible = any(
-                    (
-                        Path(item["source_path"]).exists()
-                        or (self.paths.root / item["source_path"]).exists()
+                all_matched = bool(declared_paths) and all(matches_by_path)
+                if all_matched and report["compatibility"] == "exact":
+                    check["status"] = "verified_metadata"
+                    check["reason"] = (
+                        "Путь подтверждён точным узлом route-графа Modeler релиза проекта."
                     )
-                    for item in check["matched_routes"]
-                    if item["source_path"]
-                )
-                if matches and report["compatibility"] == "exact" and accessible:
-                    check["status"] = "verified"
-                    check["reason"] = "Путь и первичный источник совпали с точным релизом."
                 elif matches:
                     check["status"] = "inferred"
                     check["reason"] = (

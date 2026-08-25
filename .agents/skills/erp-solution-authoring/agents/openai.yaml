@@ -1,0 +1,14 @@
+interface:
+  display_name: "ERP Solution Authoring"
+  short_description: "Создаёт проверяемые инструкции и схемы ERP"
+  default_prompt: "Use $erp-solution-authoring to write the confirmed ERP solution from graph evidence."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "newagent_1c"
+      description: "Approved NewAgent project state and graph evidence"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

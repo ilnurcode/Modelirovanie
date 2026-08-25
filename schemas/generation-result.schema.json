@@ -8,6 +8,8 @@
     "artifact_type",
     "title",
     "summary",
+    "document_flow",
+    "vanessa_feature",
     "questions",
     "implementation",
     "roles",
@@ -26,6 +28,32 @@
     },
     "title": {"type": "string", "minLength": 1},
     "summary": {"type": "string"},
+    "document_flow": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "condition", "documents"],
+        "properties": {
+          "title": {"type": "string"},
+          "condition": {"type": "string"},
+          "documents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "node_id", "evidence_refs"],
+              "properties": {
+                "name": {"type": "string"},
+                "node_id": {"type": "string"},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "vanessa_feature": {"type": "string"},
     "questions": {
       "type": "array",
       "items": {
@@ -109,7 +137,10 @@
           "product",
           "release",
           "verification_status",
-          "notes"
+          "notes",
+          "source_ref",
+          "node_id",
+          "edge_ids"
         ],
         "properties": {
           "id": {"type": "string"},
@@ -122,6 +153,9 @@
             "enum": ["verified", "verified_metadata", "inferred"]
           },
           "notes": {"type": "string"}
+          ,"source_ref": {"type": "string"}
+          ,"node_id": {"type": "string"}
+          ,"edge_ids": {"type": "array", "items": {"type": "string"}}
         }
       }
     }

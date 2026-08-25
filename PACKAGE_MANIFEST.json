@@ -1,19 +1,21 @@
 {
   "package": "1C-Consultant-Portable",
-  "application_version": "0.7.0",
-  "created_at": "2026-08-24",
+  "application_version": "4.1.0",
+  "created_at": "2026-08-25",
   "target_os": "Windows, Linux, macOS; x64 and arm64",
-  "runtime": "standalone native executable",
+  "runtime": "standalone native executable; Python-first workflow and Wormsoft API roles",
   "python_for_source_development": ">=3.11",
   "configuration_pack": {
     "product": "1С:ERP Управление предприятием 2",
     "release": "2.5.27.49",
     "graph_version": "0.5.0",
+    "graph_database_sha256": "8947dbca6a355792417ca95b91833dcf035bcea5da55fc92b03915a59e812773",
     "mode_without_primary_xml": "candidates_only",
     "included": [
       "route_graph",
       "semantic_graph",
-      "search_index"
+      "search_index",
+      "four_layer_sqlite"
     ],
     "not_included": [
       "primary_xml",
@@ -25,10 +27,12 @@
   "privacy": {
     "contains_xml": false,
     "contains_raw_its": false,
+    "contains_derived_its_content": true,
     "contains_input_documents": false,
     "contains_user_projects": false,
     "contains_api_keys": false,
     "contains_local_agent_profiles": false
   },
-  "integrity_file": "FILES.sha256"
+  "source_integrity_file": "provenance/kirill-FILES.sha256",
+  "provenance_document": "docs/provenance.md"
 }

@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/unified-analysis.schema.json",
+  "title": "Unified 1C analytical project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project_id", "product", "release", "source_hash", "revision", "requirements", "decisions", "evidence", "gaps", "traceability", "acceptance_tests", "questions", "solution_elements", "instruction_steps", "dirty_clusters", "approvals", "checks"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "project_id": {"type": "string", "minLength": 1},
+    "product": {"type": "string"},
+    "release": {"type": "string"},
+    "source_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "gaps": {"type": "array", "items": {"$ref": "#/$defs/gap"}},
+    "traceability": {"type": "array", "items": {"$ref": "#/$defs/traceLink"}},
+    "acceptance_tests": {"type": "array", "items": {"$ref": "#/$defs/acceptanceTest"}},
+    "questions": {"type": "array", "maxItems": 12, "items": {"type": "object"}},
+    "solution_elements": {"type": "array", "items": {"type": "object"}},
+    "instruction_steps": {"type": "array", "items": {"type": "object"}},
+    "dirty_clusters": {"type": "array", "items": {"type": "string"}},
+    "approvals": {
+      "type": "object",
+      "required": ["requirements_revision", "design_revision", "final_revision"],
+      "properties": {
+        "requirements_revision": {"type": ["integer", "null"]},
+        "design_revision": {"type": ["integer", "null"]},
+        "final_revision": {"type": ["integer", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "checks": {
+      "type": "object",
+      "required": ["schema_valid", "modeler_passed"],
+      "properties": {
+        "schema_valid": {"type": "boolean"},
+        "modeler_passed": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "idArray": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_text", "cluster", "source", "coverage_status", "decision_ids", "evidence_ids", "solution_element_ids", "acceptance_test_ids"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^REQ-[a-f0-9]{12}$"},
+        "source_text": {"type": "string", "minLength": 1},
+        "cluster": {"type": "string", "minLength": 1},
+        "source": {"type": "object"},
+        "coverage_status": {"enum": ["covered", "partial", "gap"]},
+        "decision_ids": {"$ref": "#/$defs/idArray"},
+        "evidence_ids": {"$ref": "#/$defs/idArray"},
+        "solution_element_ids": {"$ref": "#/$defs/idArray"},
+        "acceptance_test_ids": {"$ref": "#/$defs/idArray"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "question_id", "exact_user_answer", "normalized_value", "revision", "affected_requirement_ids"],
+      "properties": {
+        "id": {"type": "string"},
+        "question_id": {"type": "string"},
+        "exact_user_answer": {"type": "string", "minLength": 1},
+        "normalized_value": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "affected_requirement_ids": {"$ref": "#/$defs/idArray"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_type", "product", "release", "source_ref", "object_ref", "field_ref", "route_ref", "edge_ref", "excerpt", "status"],
+      "properties": {
+        "id": {"type": "string"},
+        "source_type": {"type": "string"},
+        "product": {"type": "string"},
+        "release": {"type": "string"},
+        "source_ref": {"type": "string"},
+        "object_ref": {"type": "string"},
+        "field_ref": {"type": "string"},
+        "route_ref": {"type": "string"},
+        "edge_ref": {"type": "string"},
+        "excerpt": {"type": "string"},
+        "status": {"enum": ["verified_source", "verified_metadata", "user_decision", "candidate", "unresolved"]}
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "requirement_ids", "description", "criticality", "reason", "prototype_method", "closure_criterion", "status"],
+      "properties": {
+        "id": {"type": "string"},
+        "requirement_ids": {"$ref": "#/$defs/idArray"},
+        "description": {"type": "string"},
+        "criticality": {"enum": ["critical", "high", "medium", "low"]},
+        "reason": {"type": "string"},
+        "prototype_method": {"type": "string"},
+        "closure_criterion": {"type": "string"},
+        "status": {"enum": ["open", "closed", "excluded"]}
+      }
+    },
+    "traceLink": {
+      "type": "object",
+      "required": ["requirement_id", "decision_ids", "evidence_ids", "solution_element_ids", "instruction_step_ids", "acceptance_test_ids"],
+      "properties": {
+        "requirement_id": {"type": "string"},
+        "decision_ids": {"$ref": "#/$defs/idArray"},
+        "evidence_ids": {"$ref": "#/$defs/idArray"},
+        "solution_element_ids": {"$ref": "#/$defs/idArray"},
+        "instruction_step_ids": {"$ref": "#/$defs/idArray"},
+        "acceptance_test_ids": {"$ref": "#/$defs/idArray"}
+      },
+      "additionalProperties": false
+    },
+    "acceptanceTest": {
+      "type": "object",
+      "required": ["id", "preconditions", "actions", "expected_result", "requirement_ids"],
+      "properties": {
+        "id": {"type": "string"},
+        "preconditions": {"type": "array", "items": {"type": "string"}},
+        "actions": {"type": "array", "items": {"type": "string"}},
+        "expected_result": {"type": "string"},
+        "requirement_ids": {"$ref": "#/$defs/idArray"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -19,17 +19,21 @@ ALLOWED_TRANSITIONS: dict[ProjectStatus, set[ProjectStatus]] = {
         ProjectStatus.DESIGN_PENDING,
         ProjectStatus.REQUIREMENTS_PENDING,
         ProjectStatus.ERROR,
+        ProjectStatus.NEEDS_REVISION,
     },
     ProjectStatus.DESIGN_PENDING: {
         ProjectStatus.DESIGN_APPROVED,
         ProjectStatus.REQUIREMENTS_APPROVED,
         ProjectStatus.REQUIREMENTS_PENDING,
         ProjectStatus.ERROR,
+        ProjectStatus.NEEDS_REVISION,
     },
     ProjectStatus.DESIGN_APPROVED: {
         ProjectStatus.GENERATING,
         ProjectStatus.DESIGN_PENDING,
         ProjectStatus.ERROR,
+        ProjectStatus.REQUIREMENTS_PENDING,
+        ProjectStatus.NEEDS_REVISION,
     },
     ProjectStatus.GENERATING: {
         ProjectStatus.REQUIREMENTS_PENDING,

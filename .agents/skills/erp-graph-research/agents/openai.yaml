@@ -1,0 +1,14 @@
+interface:
+  display_name: "ERP Graph Research"
+  short_description: "Исследует 1С ERP через граф и MCP"
+  default_prompt: "Use $erp-graph-research to investigate this ERP question with traceable graph evidence."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "newagent_1c"
+      description: "NewAgent evidence graph and project facade"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

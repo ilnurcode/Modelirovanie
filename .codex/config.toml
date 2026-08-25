@@ -1,0 +1,3 @@
+# Codex is a thin interface for this repository.
+# Request path: consultant.cmd -> Python graph/runtime -> Wormsoft API roles.
+# No MCP server is required.

@@ -53,12 +53,17 @@ def result(artifact_type: str) -> dict:
         "artifact_type": artifact_type,
         "title": "Тестовый процесс",
         "summary": "Проверяемый результат.",
+        "document_flow": [],
+        "vanessa_feature": "",
         "sources": [
             {
                 "id": "s1",
                 "title": "Тестовая статья",
                 "local_ref": "knowledge/articles/test.md",
                 "verification_status": "verified",
+                "source_ref": "knowledge/articles/test.md",
+                "node_id": "",
+                "edge_ids": [],
             }
         ],
     }
@@ -75,6 +80,16 @@ def result(artifact_type: str) -> dict:
         return base
     base.update(
         {
+            "document_flow": [
+                {
+                    "title": "Основной маршрут",
+                    "condition": "Типовой вариант",
+                    "documents": [
+                        {"name": "Документ Тест", "node_id": "test-node", "evidence_refs": ["s1"]}
+                    ],
+                }
+            ],
+            "vanessa_feature": "",
             "implementation": ["Использовать типовой маршрут"],
             "roles": ["Консультант"],
             "objects": ["Тестовый объект"],

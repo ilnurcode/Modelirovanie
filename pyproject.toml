@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "consultant-cli"
-version = "0.7.0"
-description = "Локальный консольный помощник консультанта 1С"
+name = "newagent-1c-analysis"
+version = "4.1.0"
+description = "Промышленный сервис доказательного моделирования процессов 1С"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

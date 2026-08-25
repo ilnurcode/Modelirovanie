@@ -58,6 +58,7 @@ class GenerationSettings:
     follow_up_questions: bool = True
     diagram: bool = True
     detail_level: str = "balanced"
+    deliverable: str = "consultant"
 
 
 @dataclass(slots=True)

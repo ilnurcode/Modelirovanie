@@ -10,7 +10,7 @@ from typing import Any
 from consultant_cli import __version__
 from consultant_cli.app import build_application
 from consultant_cli.console import open_external_agent, run_menu
-from consultant_cli.errors import ConsultantError
+from consultant_cli.errors import ConsultantError, InvalidConfigurationError
 from consultant_cli.infrastructure.settings import AgentProfile
 from consultant_cli.domain.models import project_state
 
@@ -34,6 +34,25 @@ def configure_console() -> None:
                 pass
 
 
+def read_markdown_input(path: Path) -> tuple[str, str, bytes]:
+    """Read an external Markdown TZ without copying its absolute path into a project."""
+    source = path.expanduser().resolve()
+    if source.suffix.casefold() not in {".md", ".markdown"}:
+        raise InvalidConfigurationError("Файл ТЗ должен иметь расширение .md или .markdown.")
+    if not source.is_file():
+        raise InvalidConfigurationError(f"Файл ТЗ не найден: {source}")
+    if source.stat().st_size > 5 * 1024 * 1024:
+        raise InvalidConfigurationError("Файл ТЗ больше 5 МБ.")
+    raw = source.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise InvalidConfigurationError("Файл ТЗ должен быть сохранён в UTF-8.") from exc
+    if not text.strip():
+        raise InvalidConfigurationError("Файл ТЗ пуст.")
+    return text, source.name, raw
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="consultant", description="Консультант 1С")
     root.add_argument("--version", action="version", version=__version__)
@@ -45,13 +64,21 @@ def parser() -> argparse.ArgumentParser:
 
     new = commands.add_parser("new", help="Создать проект")
     new.add_argument("title")
-    new.add_argument("--prompt", required=True)
+    new_source = new.add_mutually_exclusive_group(required=True)
+    new_source.add_argument("--prompt", help="Текст ТЗ")
+    new_source.add_argument("--file", type=Path, help="Путь к ТЗ в UTF-8 Markdown")
     new.add_argument("--product", default="not_configured")
     new.add_argument("--edition", default="")
     new.add_argument("--release", default="")
     new.add_argument("--agent", default="")
     new.add_argument("--project-id")
     new.add_argument("--detail", choices=["concise", "balanced", "detailed"], default="balanced")
+    new.add_argument(
+        "--deliverable",
+        choices=["process", "consultant", "vanessa"],
+        default="consultant",
+        help="Формат результата: процесс, инструкция консультанта или сценарий Vanessa",
+    )
 
     commands.add_parser("list", help="Список проектов")
     delete = commands.add_parser("delete", help="Удалить проект из списка в корзину")
@@ -67,6 +94,23 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("project_id")
     run = commands.add_parser("run", help="Продолжить текущий этап")
     run.add_argument("project_id")
+    recover = commands.add_parser(
+        "recover", help="Повторно обработать последний сохранённый ответ без вызова API"
+    )
+    recover.add_argument("project_id")
+    ask = commands.add_parser("ask", help="Задать вопрос сохранённому проекту и записать Markdown")
+    ask.add_argument("project_id")
+    ask.add_argument("question")
+    ask.add_argument(
+        "--kind",
+        choices=["process", "consultant", "vanessa", "implementation"],
+        default="process",
+    )
+    preflight = commands.add_parser(
+        "preflight", help="Выполнить предварительные Python-проверки без LLM"
+    )
+    preflight.add_argument("project_id")
+    preflight.add_argument("--focus", default="")
 
     configure = commands.add_parser("configure", help="Изменить параметры проекта")
     configure.add_argument("project_id")
@@ -75,6 +119,7 @@ def parser() -> argparse.ArgumentParser:
     configure.add_argument("--edition")
     configure.add_argument("--release")
     configure.add_argument("--detail", choices=["concise", "balanced", "detailed"])
+    configure.add_argument("--deliverable", choices=["process", "consultant", "vanessa"])
     configure.add_argument(
         "--internet-policy",
         choices=["forbidden", "official_only", "official_and_allowed_web"],
@@ -86,6 +131,30 @@ def parser() -> argparse.ArgumentParser:
     answer.add_argument("project_id")
     answer.add_argument("--set", action="append", default=[], metavar="ID=ANSWER")
     answer.add_argument("--file", type=Path, help="JSON-файл вида {ID: answer}")
+
+    analyze = commands.add_parser("analyze", help="Пакетно найти доказательства и обновить аналитическую модель")
+    analyze.add_argument("project_id")
+    analysis_status = commands.add_parser("analysis-status", help="Показать унифицированную аналитическую модель")
+    analysis_status.add_argument("project_id")
+    decision = commands.add_parser("decision", help="Записать точный ответ на бизнес-вопрос")
+    decision.add_argument("project_id")
+    decision.add_argument("question_id")
+    decision.add_argument("--answer", required=True)
+    modeler = commands.add_parser("modeler", help="Запустить независимую проверку аналитической модели")
+    modeler.add_argument("project_id")
+    telemetry = commands.add_parser("telemetry", help="Показать агрегированную телеметрию проекта")
+    telemetry.add_argument("project_id")
+    commands.add_parser("runtime-status", help="Проверить Python/API runtime без вывода секрета")
+    commands.add_parser("graph-status", help="Проверить опубликованный четырёхслойный граф")
+    graph_search = commands.add_parser("graph-search", help="Выполнить Python hybrid search по ERP-графу")
+    graph_search.add_argument("query")
+    graph_search.add_argument("--limit", type=int, default=12)
+    graph_search.add_argument("--layer", type=int, action="append", default=[])
+    migrate = commands.add_parser("migrate-analysis", help="Импортировать аналитические артефакты как данные")
+    migrate.add_argument("project_id")
+    migrate.add_argument("--requirements", type=Path)
+    migrate.add_argument("--evidence", type=Path)
+    migrate.add_argument("--bootstrap-kirill", action="store_true")
 
     approve = commands.add_parser("approve", help="Явно согласовать этап")
     approve.add_argument("project_id")
@@ -152,6 +221,7 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--model", default="")
     add.add_argument("--secret-env", default="")
     add.add_argument("--protocol", default="")
+    add.add_argument("--reasoning-effort", default="")
     add.add_argument("--default", action="store_true")
     test = agent_commands.add_parser("test")
     test.add_argument("name")
@@ -200,16 +270,24 @@ def main(argv: list[str] | None = None) -> int:
 def dispatch(app, args) -> Any:
     command = args.command
     if command == "new":
+        prompt, source_name, source_bytes = (
+            read_markdown_input(args.file)
+            if args.file is not None
+            else (args.prompt, "", None)
+        )
         project = app.workflow.create_project(
             title=args.title,
-            prompt=args.prompt,
+            prompt=prompt,
             mode="full",
             product=args.product,
             edition=args.edition,
             release=args.release,
             agent_profile=args.agent,
             detail_level=args.detail,
+            deliverable=args.deliverable,
             project_id=args.project_id,
+            source_name=source_name,
+            source_bytes=source_bytes,
         )
         return project.to_dict()
     if command == "list":
@@ -247,6 +325,24 @@ def dispatch(app, args) -> Any:
             if project.status.value == "feedback_pending"
             else "Выполните явный апрув текущего этапа",
         }
+    if command == "recover":
+        project, artifact = app.workflow.recover_latest_generation(args.project_id)
+        next_action = {
+            "requirements_pending": "Ответьте на вопросы и выполните явный апрув requirements",
+            "design_pending": "Проверьте проект решения и выполните явный апрув design",
+            "feedback_pending": "Проверьте инструкцию и ответьте, всё ли вас устраивает",
+        }.get(project.status.value, "Продолжите lifecycle из текущего статуса проекта")
+        return {
+            "project_id": project.project_id,
+            "status": project.status.value,
+            "artifact": str(artifact),
+            "recovered_without_api": True,
+            "next_action": next_action,
+        }
+    if command == "ask":
+        return app.workflow.ask_project(args.project_id, args.question, args.kind)
+    if command == "preflight":
+        return app.workflow.preflight(args.project_id, args.focus)
     if command == "configure":
         values = {}
         mapping = {
@@ -255,6 +351,7 @@ def dispatch(app, args) -> Any:
             "edition": "edition",
             "release": "release",
             "detail": "detail_level",
+            "deliverable": "deliverable",
             "internet_policy": "internet_policy",
         }
         for source, target in mapping.items():
@@ -276,6 +373,37 @@ def dispatch(app, args) -> Any:
         if not answers:
             raise ValueError("Передайте --set или --file")
         return {"path": str(app.workflow.save_answers(args.project_id, answers))}
+    if command == "analyze":
+        return app.analytics.analyze_evidence(args.project_id)
+    if command == "analysis-status":
+        return app.analytics.ensure(args.project_id).to_dict()
+    if command == "decision":
+        return app.workflow.record_decision(args.project_id, args.question_id, args.answer)
+    if command == "modeler":
+        return app.analytics.run_modeler(args.project_id)
+    if command == "telemetry":
+        return app.telemetry.aggregate(args.project_id)
+    if command == "runtime-status":
+        return {
+            "api": app.agents.api_runtime_status(),
+            "graph": app.workflow.graph.status(),
+            "request_path": "python",
+            "interfaces": ["pi", "opencode", "codex"],
+        }
+    if command == "graph-status":
+        return app.workflow.graph.status()
+    if command == "graph-search":
+        return app.workflow.graph.search(
+            args.query, layers=args.layer, limit=max(1, min(args.limit, 50))
+        )
+    if command == "migrate-analysis":
+        if args.bootstrap_kirill:
+            return app.migrations.bootstrap_kirill_project(args.project_id)
+        if not args.requirements:
+            raise ValueError("Передайте --requirements или --bootstrap-kirill")
+        return app.migrations.import_yana_artifacts(
+            args.project_id, args.requirements, args.evidence
+        )
     if command == "approve":
         return app.workflow.approve(
             args.project_id, args.stage, args.by, args.evidence
@@ -335,6 +463,7 @@ def dispatch_agent(app, args) -> Any:
             model=args.model,
             secret_env=args.secret_env,
             protocol=args.protocol,
+            reasoning_effort=args.reasoning_effort,
         )
         app.agents.add_profile(profile, make_default=args.default)
         return {"added": args.name, "default": app.settings.default_agent}

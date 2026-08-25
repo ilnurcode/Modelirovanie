@@ -49,8 +49,16 @@ Installer создаёт launcher, который передаёт прилож�
   `~/.local/share/1c-consultant/1c-consultant`;
 - macOS: `~/Library/Application Support/1C-Consultant/1c-consultant`.
 
+Windows также создаёт ярлыки `1C-Consultant` на рабочем столе и в меню «Пуск».
+На macOS программа доступна в `~/Applications/1C-Consultant.app`; её открытие
+запускает CLI в Terminal. Все элементы создаются для текущего пользователя без
+прав администратора и удаляются пунктом `Удалить 1C-Consultant`.
+
 Работа с проектами, подключение AI, апрувы, экспорт и удаление проектов описаны в
 [руководстве консультанта](consultant-cli.md).
+
+Версия 4.1 использует фиксированные Wormsoft API-роли. Ключ задаётся только локально
+в `NEWAGENT_API_KEY` или `WORMSOFT_API_KEY`; installer и Release его не содержат.
 
 ## Где хранятся данные
 
@@ -60,13 +68,19 @@ Installer создаёт launcher, который передаёт прилож�
 app/<version>/                         активные и предыдущие версии приложения
 graphs/<id>/<configuration>/<version>/ установленные графы
 config/installed.json                  активные версии и пути
+config/consultant.local.toml           локальные настройки приложения
+results/                               проекты, ревизии, ответы и телеметрия
+examples/approved/index.ndjson         подтверждённые примеры
+.cache/evidence/                       восстанавливаемый поисковый кэш
 logs/installer.log                     журнал installer
 temp/                                  временные загрузки
 1C-Consultant.cmd или 1c-consultant    launcher приложения
 ```
 
-Приложение получает корень через `CONSULTANT_DATA_DIR` и читает путь активного графа
-из `config/installed.json`. Если состояние отсутствует, оно проверяет встроенный граф.
+Приложение получает корень через `CONSULTANT_DATA_DIR`, поэтому проекты и настройки
+не лежат внутри `app/<version>` и сохраняются при обновлении или rollback. Путь
+активного графа читается из `config/installed.json`. Если состояние отсутствует,
+приложение проверяет встроенный граф.
 
 ## Как обновляется приложение
 
@@ -93,20 +107,43 @@ Installer скачивает только пакет своей ОС и архи
 
 Workflow нативно собирает application ZIP для Windows x64, Linux x64/ARM64 и macOS
 x64/ARM64. Затем `go build` создаёт пять installer-бинарников. Финальный job публикует
-manifest, графы, setup ZIP, offline bundle и `SHA256SUMS`.
+manifest, графы, setup ZIP, offline bundle и `SHA256SUMS`. До публикации job должен
+получить приватный артефакт `private-graph/erp_graph_mcp.sqlite`; без него сборка
+останавливается, чтобы Release не содержал неполный граф.
 
 ## Как обновить существующий граф
 
-Текущий пакет содержит граф 1С:ERP. Для его обновления:
+Текущий пакет содержит граф 1С:ERP. В Graph ZIP входят лёгкие файлы Modeler и только
+`graph_rag_data/erp_graph_mcp.sqlite` из четырёхслойного индекса. `chunks.json`,
+`chunks_meta.json`, `knowledge_graph.pkl`, `nodes.json`, TF-IDF-файлы и отчёты сборки
+в Release не копируются. Для обновления:
 
 1. Пересоберите файлы в `1c_modeler_upgrade/graphs/` штатными скриптами проекта.
-2. Проверьте `graph_manifest.json`, route graph, semantic graph и
-   `search-index.ndjson.gz`.
+2. Проверьте `graph_manifest.json`, route graph, semantic graph,
+   `search-index.ndjson.gz` и новый `erp_graph_mcp.sqlite`.
 3. Увеличьте `configuration_pack.graph_version` в `PACKAGE_MANIFEST.json`.
 4. Если граф требует новую функциональность приложения, увеличьте также
    `application_version` и оставьте в manifest соответствующую минимальную версию.
 5. Обновите `FILES.sha256`, прогоните тесты и валидатор.
 6. Опубликуйте новый Release.
+
+Локальная сборка получает SQLite явно, не добавляя его в Git:
+
+```powershell
+./deployment/scripts/build-release.ps1 `
+  -BaseUrl "https://github.com/OWNER/REPO/releases/download/v4.1.0" `
+  -ApplicationDirectory application-packages `
+  -OutputDirectory release `
+  -GraphDatabase "C:\Users\Ilnur\Desktop\graph_rag_data\erp_graph_mcp.sqlite" `
+  -GraphDatabaseSha256 "8947dbca6a355792417ca95b91833dcf035bcea5da55fc92b03915a59e812773"
+```
+
+Для CI упакуйте SQLite без дополнительного каталога в asset
+`erp_graph_mcp.sqlite.zip`, опубликуйте его в отдельном Release
+`graph-v<graph_version>`, например `graph-v0.5.0`, и пометьте этот Release как
+prerelease, чтобы он не заменял latest Release приложения. Workflow скачивает asset
+через `GITHUB_TOKEN` и проверяет SHA-256 из `PACKAGE_MANIFEST.json`; дополнительные
+secrets не нужны.
 
 Graph ZIP имеет независимую `graph_version`. Installer скачивает его во новый каталог
 и записывает активный путь только после успешной проверки архива.
@@ -135,13 +172,13 @@ Installer уже поддерживает несколько записей в �
   "url": "https://github.com/OWNER/REPO/releases/download/v0.8.0/ut-11.5.20.95-graph-1.0.0.zip",
   "sha256": "<64 hex symbols>",
   "size": 123456,
-  "minimum_application_version": "0.8.0"
+  "minimum_application_version": "4.1.0"
 }
 ```
 
-Архив должен содержать `graph_manifest.json`, route graph, semantic graph и компактный
-поисковый индекс. Путь внутри архива не должен выходить через `..` и не должен содержать
-symlink.
+Архив должен содержать `graph_manifest.json`, route graph, semantic graph, компактный
+поисковый индекс и, для hybrid search, `graph_rag_data/erp_graph_mcp.sqlite`. Путь внутри
+архива не должен выходить через `..` и не должен содержать symlink.
 
 Текущий `deployment/scripts/build-release.ps1` автоматически формирует ERP-запись.
 Для второй конфигурации нужно добавить в него создание отдельного Graph ZIP и вторую

@@ -15,16 +15,23 @@ PyInstaller-пакеты приложения на своих ОС. Финаль
 
 ```powershell
 ./deployment/scripts/build-release.ps1 `
-  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v0.7.0" `
-  -ApplicationDirectory application-packages
+  -BaseUrl "https://github.com/ilnurcode/Modelirovanie/releases/download/v4.1.0" `
+  -ApplicationDirectory application-packages `
+  -GraphDatabase "C:\Users\Ilnur\Desktop\graph_rag_data\erp_graph_mcp.sqlite" `
+  -GraphDatabaseSha256 "8947dbca6a355792417ca95b91833dcf035bcea5da55fc92b03915a59e812773"
 ```
 
 Если Python вызывается не через `py -3`, передайте
 `-Python "C:\path\python.exe" -PythonArguments @()`.
 
 Нативный application ZIP создаёт `scripts/build_application.py`. Финальный скрипт
-проверяет наличие пяти пакетов, вычисляет SHA-256 и записывает manifest. Installer
-по умолчанию берёт manifest последнего Release.
+проверяет наличие пяти пакетов, вычисляет SHA-256, записывает manifest и добавляет в
+отдельный graph ZIP только SQLite и необходимые лёгкие графы. Исходные `chunks`,
+pickle и TF-IDF-файлы туда не попадают. В GitHub Actions SQLite скачивается как
+`erp_graph_mcp.sqlite.zip` из отдельного Release `graph-v<graph_version>`, распаковывается
+и проверяется по SHA-256 из
+`PACKAGE_MANIFEST.json`. Дополнительные secrets не нужны. Installer по умолчанию
+берёт manifest последнего Release приложения.
 
 Для offline bundle положите `manifest.json` в корень, application ZIP — в
 `application/`, graph ZIP — в `graphs/`, installer-бинарники — в `installer/`.
@@ -50,6 +57,10 @@ URL manifest и параметры командной строки обычно�
 Для двойного клика скачайте `1c-consultant-setup-<ОС>-<архитектура>.zip`.
 Windows запускает `.cmd`, macOS — `.command`, Linux — `.sh`. На Linux окружение
 рабочего стола может один раз запросить разрешение на запуск файла.
+
+После установки Windows получает ярлыки на рабочем столе и в меню «Пуск» текущего
+пользователя. На macOS приложение появляется как `~/Applications/1C-Consultant.app`
+и открывает CLI в Terminal. Права администратора для этой интеграции не требуются.
 
 ## Автоматизация
 

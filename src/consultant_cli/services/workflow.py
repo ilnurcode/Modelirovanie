@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import copy
+import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,13 +17,20 @@ from consultant_cli.domain.models import (
     now_iso,
 )
 from consultant_cli.domain.states import assert_stage_can_be_approved, transition
-from consultant_cli.errors import InvalidConfigurationError, NotFoundError, WorkflowBlockedError
+from consultant_cli.errors import (
+    GenerationValidationError,
+    InvalidConfigurationError,
+    NotFoundError,
+    WorkflowBlockedError,
+)
 from consultant_cli.infrastructure import frontmatter
 from consultant_cli.infrastructure.settings import AppSettings
 from consultant_cli.infrastructure.store import (
     ProjectStore,
     RepositoryPaths,
+    atomic_write_bytes,
     atomic_write_json,
+    atomic_write_text,
     slugify,
 )
 from consultant_cli.services.agents import AgentService
@@ -34,6 +44,16 @@ from consultant_cli.services.generation import (
 )
 from consultant_cli.services.modeler import ModelerReviewService
 from consultant_cli.services.sources import SourceRouter
+from consultant_cli.services.analytics import AnalyticsService
+from consultant_cli.services.telemetry import TelemetryService
+from consultant_cli.services.graph_search import GraphSearchService
+
+
+ROLE_BY_STAGE = {
+    "questions": "erp-translator",
+    "design": "erp-process-planner",
+    "instruction": "instruction-writer",
+}
 
 
 class WorkflowService:
@@ -54,6 +74,9 @@ class WorkflowService:
         self.renderer = ArtifactRenderer()
         self.modeler = ModelerReviewService(paths)
         self.examples = ExampleRegistry(paths, store)
+        self.analytics = AnalyticsService(paths, store)
+        self.telemetry = TelemetryService(paths, store)
+        self.graph = GraphSearchService(paths)
 
     def create_project(
         self,
@@ -65,7 +88,10 @@ class WorkflowService:
         release: str = "",
         agent_profile: str = "",
         detail_level: str = "balanced",
+        deliverable: str = "consultant",
         project_id: str | None = None,
+        source_name: str = "",
+        source_bytes: bytes | None = None,
     ) -> Project:
         if not title.strip():
             raise InvalidConfigurationError("Название проекта обязательно для заполнения.")
@@ -74,6 +100,8 @@ class WorkflowService:
                 "Поддерживается только полный режим с обязательными вопросами."
             )
         selected_mode = ProjectMode.FULL
+        if deliverable not in {"process", "consultant", "vanessa"}:
+            raise InvalidConfigurationError(f"Неизвестный формат результата: {deliverable}")
         base_id = slugify(project_id or title)
         candidate = base_id
         suffix = 2
@@ -85,6 +113,7 @@ class WorkflowService:
             follow_up_questions=True,
             diagram=True,
             detail_level=detail_level,
+            deliverable=deliverable,
         )
         project = Project(
             project_id=candidate,
@@ -96,11 +125,31 @@ class WorkflowService:
             agent_profile=agent_profile or self.settings.default_agent,
         )
         self.store.create(project, prompt)
+        if source_name:
+            exact_source = source_bytes if source_bytes is not None else prompt.encode("utf-8")
+            atomic_write_bytes(
+                self.store.project_dir(project.project_id) / "00-source.md",
+                exact_source,
+            )
+            self.store.append_event(
+                project.project_id,
+                "project_created_from_markdown",
+                {
+                    "source_name": Path(source_name).name,
+                    "sha256": hashlib.sha256(exact_source).hexdigest(),
+                },
+            )
+        self.analytics.initialize(project.project_id, prompt, project.configuration)
         return project
 
     def configure(self, project_id: str, values: dict[str, Any]) -> Project:
         with self.store.lock(project_id):
             project = self.store.load(project_id)
+            previous_configuration = (
+                project.configuration.product,
+                project.configuration.edition,
+                project.configuration.release,
+            )
             if "agent_profile" in values:
                 project.agent_profile = str(values["agent_profile"])
             if "product" in values:
@@ -129,9 +178,20 @@ class WorkflowService:
                 project.generation.diagram = True
             if "detail_level" in values:
                 project.generation.detail_level = str(values["detail_level"])
+            if "deliverable" in values:
+                deliverable = str(values["deliverable"])
+                if deliverable not in {"process", "consultant", "vanessa"}:
+                    raise WorkflowBlockedError(f"Неизвестный формат результата: {deliverable}")
+                project.generation.deliverable = deliverable
             if "internet_policy" in values:
                 project.sources.internet_policy = str(values["internet_policy"])
             self.store.save(project)
+            if previous_configuration != (
+                project.configuration.product,
+                project.configuration.edition,
+                project.configuration.release,
+            ):
+                self.analytics.reconfigure(project_id, project.configuration)
             self.store.append_event(project_id, "project_configured", values)
             return project
 
@@ -145,11 +205,40 @@ class WorkflowService:
         self.examples.rebuild()
         return destination
 
+    def record_decision(self, project_id: str, question_id: str, answer: str) -> dict[str, Any]:
+        with self.store.lock(project_id):
+            project = self.store.load(project_id)
+            if project.status is ProjectStatus.GENERATING:
+                raise WorkflowBlockedError("Нельзя менять решение во время генерации.")
+            result = self.analytics.record_decision(project_id, question_id, answer)
+            if not result.get("recorded"):
+                return result
+            project.revision = int(result["revision"])
+            if project.status in {
+                ProjectStatus.REQUIREMENTS_APPROVED,
+                ProjectStatus.DESIGN_PENDING,
+                ProjectStatus.DESIGN_APPROVED,
+            }:
+                transition(project, ProjectStatus.REQUIREMENTS_PENDING)
+            elif project.status in {
+                ProjectStatus.FEEDBACK_PENDING,
+                ProjectStatus.DRAFT,
+                ProjectStatus.SUCCESSFUL,
+                ProjectStatus.ERROR,
+            }:
+                transition(project, ProjectStatus.NEEDS_REVISION)
+            self.store.save(project)
+            self.store.append_event(project_id, "decision_recorded", result)
+            self.examples.rebuild()
+            return result
+
     def run(self, project_id: str) -> tuple[Project, Path]:
         with self.store.lock(project_id):
             project = self.store.load(project_id)
             stage = self._next_stage(project)
-            profile = self.agents.get_profile(project.agent_profile or None)
+            analysis = self.analytics.ensure(project_id)
+            if analysis.dirty_clusters:
+                self.analytics.analyze_evidence(project_id, analysis.dirty_clusters)
             request = self.store.read_artifact(project_id, "00-request.md")
             feedback_path = self.store.project_dir(project_id) / "feedback.md"
             if feedback_path.exists():
@@ -167,53 +256,159 @@ class WorkflowService:
                     "warnings": route.warnings,
                 },
             )
+            role = ROLE_BY_STAGE[stage]
+            use_role_runtime = hasattr(self.agents, "generate_role") and hasattr(
+                self.agents, "role_profile"
+            )
+            profile = (
+                self.agents.role_profile(role)
+                if use_role_runtime
+                else self.agents.get_profile(project.agent_profile or None)
+            )
             if route.web_search_required and project.sources.internet_policy == "forbidden":
                 raise WorkflowBlockedError(
                     "Для выбранной конфигурации нет совместимого локального XML. "
                     "Разрешите официальные интернет-источники или добавьте подходящую "
                     "документацию в базу знаний."
                 )
-            if route.web_search_required and profile.kind in {
-                "openai_compatible",
-                "custom_cli",
-            }:
-                raise WorkflowBlockedError(
-                    "Выбранный AI-профиль не гарантирует веб-поиск. Добавьте подходящие "
-                    "документы/URL, используйте OpenAI Responses API или откройте проект "
-                    "во внешнем агенте с веб-доступом."
-                )
             existing = self._existing_context(project, stage)
+            existing += "\n\nUNIFIED ANALYTICS (compact JSON)\n" + self.analytics.author_context(project_id)
             example_context = self._example_context(project)
             if example_context:
                 existing += "\n\nСовместимые подтверждённые примеры:\n" + example_context
+            graph_context = self.graph.project_context(
+                project_id, request, project.revision
+            )
+            modeler_context = (
+                ""
+                if stage == "questions"
+                else self.modeler.context(project, request)
+            )
             prompt = self.prompts.build(
                 project,
                 stage,
                 request,
                 self.sources.context(route),
                 existing,
-                self.modeler.context(project, request),
+                modeler_context,
+                graph_context,
+                role,
             )
             previous_status = project.status
             transition(project, ProjectStatus.GENERATING)
             self.store.save(project)
+            started = time.perf_counter()
+            attempt = 1 + sum(
+                1
+                for item in self.telemetry.records(project_id)
+                if item.get("skill") == role
+            )
+            self.store.append_event(
+                project_id,
+                "api_role_started",
+                {
+                    "stage": stage,
+                    "role": role,
+                    "model": profile.model,
+                    "attempt": attempt,
+                },
+            )
             try:
-                result = self.agents.generate(
+                generation_args = (
+                    role,
+                    prompt,
+                    self.contract.schema(),
+                ) if use_role_runtime else (
                     profile,
                     prompt,
                     self.contract.schema(),
+                )
+                generator = self.agents.generate_role if use_role_runtime else self.agents.generate
+                result = generator(
+                    *generation_args,
                     allow_web_search=(
                         route.web_search_required
                         and project.sources.internet_policy != "forbidden"
                     ),
                 )
+                raw_result_path = (
+                    self.store.project_dir(project_id)
+                    / "agent_artifacts"
+                    / f"{stage}-raw-r{project.revision:03d}-a{attempt:03d}.json"
+                )
+                atomic_write_json(raw_result_path, result)
+                ref_repairs = self.contract.normalize_known_project_refs(result, project)
+                if ref_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "known_source_refs_normalized",
+                        {"stage": stage, "repairs": ref_repairs},
+                    )
+                missing_ref_repairs = self.contract.normalize_missing_local_refs(result)
+                if missing_ref_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "missing_local_refs_normalized",
+                        {"stage": stage, "repairs": missing_ref_repairs},
+                    )
+                flow_repairs = (
+                    self.graph.normalize_document_flow(result)
+                    if stage != "questions"
+                    else []
+                )
+                if flow_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "document_flow_normalized",
+                        {"stage": stage, "repairs": flow_repairs},
+                    )
+                evidence_repairs = self.contract.normalize_evidence_refs(result)
+                if evidence_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "evidence_refs_normalized",
+                        {"stage": stage, "repairs": evidence_repairs},
+                    )
+                modeler_path_repairs = (
+                    self.modeler.normalize_ui_paths(project, result)
+                    if stage == "instruction"
+                    else []
+                )
+                if modeler_path_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "ui_paths_expanded_from_modeler",
+                        {"stage": stage, "repairs": modeler_path_repairs},
+                    )
                 self.contract.validate(result, stage, project, route)
+                flow_errors = self.graph.document_flow_errors(result) if stage != "questions" else []
+                if flow_errors:
+                    raise GenerationValidationError("; ".join(flow_errors))
+                atomic_write_json(
+                    self.store.project_dir(project_id)
+                    / "agent_artifacts"
+                    / f"{stage}-r{project.revision:03d}.json",
+                    result,
+                )
                 artifact_path = self._save_generation(project, stage, result)
                 self.store.write_artifact(project_id, "evidence.ndjson", evidence_ndjson(result))
                 self.store.append_event(
                     project_id,
                     f"{stage}_generated",
-                    {"agent_profile": profile.name, "artifact": artifact_path.name},
+                    {"role": role, "model": profile.model, "artifact": artifact_path.name},
+                )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self.telemetry.record(
+                    project_id,
+                    provider=profile.kind,
+                    model=profile.model or profile.command or profile.name,
+                    reasoning_effort=profile.reasoning_effort,
+                    skill=role,
+                    attempt=attempt,
+                    result="completed",
+                    duration_ms=elapsed_ms,
+                    wall_time_ms=elapsed_ms,
+                    **getattr(self.agents, "last_usage", {}),
                 )
                 project.last_error = ""
                 self.store.save(project)
@@ -226,7 +421,140 @@ class WorkflowService:
                 project.last_error = str(exc)
                 self.store.save(project)
                 self.store.append_event(project_id, "generation_failed", {"error": str(exc)})
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self.telemetry.record(
+                    project_id,
+                    provider=profile.kind,
+                    model=profile.model or profile.command or profile.name,
+                    reasoning_effort=profile.reasoning_effort,
+                    skill=role,
+                    attempt=attempt,
+                    result="failed",
+                    error=str(exc),
+                    duration_ms=elapsed_ms,
+                    wall_time_ms=elapsed_ms,
+                    **getattr(self.agents, "last_usage", {}),
+                )
                 raise
+
+    def recover_latest_generation(self, project_id: str) -> tuple[Project, Path]:
+        """Revalidate and save the latest raw response without another API call."""
+        with self.store.lock(project_id):
+            project = self.store.load(project_id)
+            preserve_pending_design = project.status is ProjectStatus.DESIGN_PENDING
+            preserve_pending_instruction = project.status is ProjectStatus.FEEDBACK_PENDING
+            stage = (
+                "design"
+                if preserve_pending_design
+                else "instruction"
+                if preserve_pending_instruction
+                else self._next_stage(project)
+            )
+            candidates = sorted(
+                (
+                    self.store.project_dir(project_id)
+                    / "agent_artifacts"
+                ).glob(
+                    f"{stage}-raw-r*-a*.json"
+                    if preserve_pending_design or preserve_pending_instruction
+                    else f"{stage}-raw-r{project.revision:03d}-a*.json"
+                ),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )
+            if not candidates:
+                raise NotFoundError(
+                    f"Сохранённый сырой ответ для этапа {stage} не найден."
+                )
+            raw_path = candidates[0]
+            result = json.loads(raw_path.read_text(encoding="utf-8"))
+            request = self.store.read_artifact(project_id, "00-request.md")
+            route = self.sources.route(project.configuration, request)
+            ref_repairs = self.contract.normalize_known_project_refs(result, project)
+            missing_ref_repairs = self.contract.normalize_missing_local_refs(result)
+            flow_repairs = (
+                self.graph.normalize_document_flow(result)
+                if stage != "questions"
+                else []
+            )
+            evidence_repairs = self.contract.normalize_evidence_refs(result)
+            modeler_path_repairs = (
+                self.modeler.normalize_ui_paths(project, result)
+                if stage == "instruction"
+                else []
+            )
+            self.contract.validate(result, stage, project, route)
+            flow_errors = self.graph.document_flow_errors(result) if stage != "questions" else []
+            if flow_errors:
+                raise GenerationValidationError("; ".join(flow_errors))
+            atomic_write_json(
+                self.store.project_dir(project_id)
+                / "agent_artifacts"
+                / f"{stage}-r{project.revision:03d}.json",
+                result,
+            )
+            if preserve_pending_design:
+                artifact_path = self.store.write_artifact(
+                    project.project_id,
+                    "02-design.md",
+                    self.renderer.design(project, result),
+                )
+            elif preserve_pending_instruction:
+                render_project = copy.deepcopy(project)
+                render_project.instruction_version = max(0, project.instruction_version - 1)
+                text = self.renderer.instruction(render_project, result)
+                artifact_path = self.store.write_artifact(
+                    project.project_id, "03-instruction.md", text
+                )
+                answer_dir = self.store.project_dir(project.project_id) / "answers_md"
+                version = project.instruction_version
+                atomic_write_text(
+                    answer_dir / f"instruction-v{version:03d}-draft.md", text
+                )
+                atomic_write_json(
+                    answer_dir / f"instruction-v{version:03d}-draft.json", result
+                )
+                self.store.write_artifact(
+                    project.project_id,
+                    "03-instruction.json",
+                    json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                )
+                self.store.write_artifact(
+                    project.project_id,
+                    "03-instruction-validation.md",
+                    instruction_validation_markdown(result),
+                )
+                modeler_review = self.modeler.review(project, result)
+                self.store.write_artifact(
+                    project.project_id,
+                    "03-modeler-review.json",
+                    json.dumps(modeler_review, ensure_ascii=False, indent=2) + "\n",
+                )
+                self.store.write_artifact(
+                    project.project_id,
+                    "03-modeler-review.md",
+                    self.modeler.markdown(modeler_review),
+                )
+            else:
+                artifact_path = self._save_generation(project, stage, result)
+            self.store.write_artifact(project_id, "evidence.ndjson", evidence_ndjson(result))
+            project.last_error = ""
+            self.store.save(project)
+            self.store.append_event(
+                project_id,
+                f"{stage}_recovered_from_raw",
+                {
+                    "raw_artifact": raw_path.name,
+                    "artifact": artifact_path.name,
+                    "known_ref_repairs": ref_repairs,
+                    "missing_local_ref_repairs": missing_ref_repairs,
+                    "document_flow_repairs": flow_repairs,
+                    "evidence_ref_repairs": evidence_repairs,
+                    "modeler_path_repairs": modeler_path_repairs,
+                    "api_calls": 0,
+                },
+            )
+            return project, artifact_path
 
     def _next_stage(self, project: Project) -> str:
         if project.status in {
@@ -259,6 +587,9 @@ class WorkflowService:
         if stage == "questions":
             text = self.renderer.requirements(project, result)
             path = self.store.write_artifact(project.project_id, "01-requirements.md", text)
+            self.analytics.synchronize_presented_questions(
+                project.project_id, result.get("questions", [])
+            )
             atomic_write_json(
                 self.store.project_dir(project.project_id) / "questions.json",
                 result.get("questions", []),
@@ -274,6 +605,13 @@ class WorkflowService:
             return path
         text = self.renderer.instruction(project, result)
         path = self.store.write_artifact(project.project_id, "03-instruction.md", text)
+        answer_dir = self.store.project_dir(project.project_id) / "answers_md"
+        answer_version = project.instruction_version + 1
+        atomic_write_text(answer_dir / f"instruction-v{answer_version:03d}-draft.md", text)
+        atomic_write_json(
+            answer_dir / f"instruction-v{answer_version:03d}-draft.json",
+            result,
+        )
         self.store.write_artifact(
             project.project_id,
             "03-instruction.json",
@@ -305,12 +643,260 @@ class WorkflowService:
             raise NotFoundError("Пакет вопросов ещё не сформирован.")
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def ask_project(
+        self, project_id: str, question: str, kind: str = "process"
+    ) -> dict[str, Any]:
+        """Answer a saved project question without changing lifecycle approvals."""
+        if kind not in {"process", "consultant", "vanessa", "implementation"}:
+            raise WorkflowBlockedError(f"Неизвестный вид ответа: {kind}")
+        if not question.strip():
+            raise WorkflowBlockedError("Вопрос по проекту не должен быть пустым.")
+        with self.store.lock(project_id):
+            project = self.store.load(project_id)
+            self.analytics.ensure(project_id)
+            query_id = hashlib.sha256(
+                f"{project.revision}\0{kind}\0{question.strip()}".encode("utf-8")
+            ).hexdigest()[:12]
+            answers_dir = self.store.project_dir(project_id) / "answers_md"
+            answer_path = answers_dir / f"query-{query_id}.md"
+            if answer_path.is_file():
+                return {
+                    "project_id": project_id,
+                    "query_id": query_id,
+                    "path": str(answer_path),
+                    "reused": True,
+                }
+            request = self.store.read_artifact(project_id, "00-request.md")
+            route = self.sources.route(project.configuration, request + "\n" + question)
+            graph_context = self.graph.project_context(
+                project_id, question, project.revision
+            )
+            temporary = copy.deepcopy(project)
+            temporary.generation.deliverable = {
+                "process": "process",
+                "implementation": "process",
+                "consultant": "consultant",
+                "vanessa": "vanessa",
+            }[kind]
+            role = "erp-process-planner" if kind in {"process", "implementation"} else "instruction-writer"
+            existing = self._existing_context(project, "instruction")
+            existing += "\n\nUNIFIED ANALYTICS\n" + self.analytics.author_context(project_id)
+            prompt = self.prompts.build(
+                temporary,
+                "design",
+                question,
+                self.sources.context(route),
+                existing,
+                self.modeler.context(project, question),
+                graph_context,
+                role,
+            )
+            profile = self.agents.role_profile(role)
+            started = time.perf_counter()
+            raw_query_path = answers_dir / f"query-{query_id}-raw.json"
+            recovered_raw = raw_query_path.is_file()
+            if recovered_raw:
+                result = json.loads(raw_query_path.read_text(encoding="utf-8"))
+            else:
+                result = self.agents.generate_role(role, prompt, self.contract.schema())
+                atomic_write_json(raw_query_path, result)
+            ref_repairs = self.contract.normalize_known_project_refs(result, temporary)
+            if ref_repairs:
+                self.store.append_event(
+                    project_id,
+                    "known_source_refs_normalized",
+                    {"stage": "project-query", "repairs": ref_repairs},
+                )
+            missing_ref_repairs = self.contract.normalize_missing_local_refs(result)
+            if missing_ref_repairs:
+                self.store.append_event(
+                    project_id,
+                    "missing_local_refs_normalized",
+                    {"stage": "project-query", "repairs": missing_ref_repairs},
+                )
+            flow_repairs = self.graph.normalize_document_flow(result)
+            if flow_repairs:
+                self.store.append_event(
+                    project_id,
+                    "document_flow_normalized",
+                    {"stage": "project-query", "repairs": flow_repairs},
+                )
+            query_flow_repairs = self.graph.prune_non_document_flow(result)
+            if query_flow_repairs:
+                self.store.append_event(
+                    project_id,
+                    "project_query_non_documents_removed_from_flow",
+                    {"stage": "project-query", "repairs": query_flow_repairs},
+                )
+            evidence_repairs = self.contract.normalize_evidence_refs(result)
+            if evidence_repairs:
+                self.store.append_event(
+                    project_id,
+                    "evidence_refs_normalized",
+                    {"stage": "project-query", "repairs": evidence_repairs},
+                )
+            modeler_path_repairs = (
+                self.modeler.normalize_ui_paths(temporary, result)
+                if kind in {"consultant", "vanessa"}
+                else []
+            )
+            if modeler_path_repairs:
+                self.store.append_event(
+                    project_id,
+                    "ui_paths_expanded_from_modeler",
+                    {"stage": "project-query", "repairs": modeler_path_repairs},
+                )
+            metadata_status_repairs = self.contract.normalize_incompatible_metadata_steps(
+                result,
+                temporary,
+                route,
+                require_modeler_route=kind in {"consultant", "vanessa"},
+            )
+            if metadata_status_repairs:
+                self.store.append_event(
+                    project_id,
+                    "project_query_metadata_status_normalized",
+                    {"stage": "project-query", "repairs": metadata_status_repairs},
+                )
+            self.contract.validate(
+                result,
+                "design",
+                temporary,
+                route,
+                allow_empty_document_flow=True,
+            )
+            flow_errors = self.graph.document_flow_errors(result)
+            if flow_errors:
+                raise GenerationValidationError("; ".join(flow_errors))
+            body = self.renderer._common_body(
+                temporary, result, f"Ответ по проекту: {question.strip()}"
+            )
+            markdown = self.renderer._frontmatter(
+                {
+                    "artifact": "project-query-answer",
+                    "project_id": project_id,
+                    "project_revision": project.revision,
+                    "query_id": query_id,
+                    "kind": kind,
+                    "role": role,
+                    "model": profile.model,
+                    "status": "unconfirmed",
+                    "created_at": now_iso(),
+                },
+                body,
+            )
+            atomic_write_text(answer_path, markdown)
+            atomic_write_json(answers_dir / f"query-{query_id}.json", result)
+            index_path = answers_dir / "index.ndjson"
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            with index_path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(
+                    json.dumps(
+                        {
+                            "query_id": query_id,
+                            "project_revision": project.revision,
+                            "kind": kind,
+                            "question": question.strip(),
+                            "path": answer_path.name,
+                            "created_at": now_iso(),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if not recovered_raw:
+                self.telemetry.record(
+                    project_id,
+                    provider=profile.kind,
+                    model=profile.model,
+                    reasoning_effort=profile.reasoning_effort,
+                    skill=f"project-query:{role}",
+                    attempt=1,
+                    result="completed",
+                    duration_ms=elapsed_ms,
+                    wall_time_ms=elapsed_ms,
+                    **getattr(self.agents, "last_usage", {}),
+                )
+            self.store.append_event(
+                project_id,
+                "project_query_answered",
+                {
+                    "query_id": query_id,
+                    "kind": kind,
+                    "path": answer_path.name,
+                    "recovered_without_api": recovered_raw,
+                },
+            )
+            return {
+                "project_id": project_id,
+                "query_id": query_id,
+                "path": str(answer_path),
+                "reused": recovered_raw,
+                "model": profile.model,
+            }
+
+    def preflight(self, project_id: str, focus: str = "") -> dict[str, Any]:
+        """Run all free/local preparation before any paid API role."""
+        with self.store.lock(project_id):
+            project = self.store.load(project_id)
+            analysis = self.analytics.ensure(project_id)
+            if analysis.dirty_clusters:
+                self.analytics.analyze_evidence(project_id, analysis.dirty_clusters)
+            prepared_analysis = self.analytics.ensure(project_id)
+            request = self.store.read_artifact(project_id, "00-request.md")
+            query = "\n\n".join(value for value in (request, focus.strip()) if value)
+            route = self.sources.route(project.configuration, query)
+            graph_context = json.loads(
+                self.graph.project_context(project_id, query, project.revision)
+            )
+            modeler_available = (
+                self.modeler.manifest_path.is_file()
+                and self.modeler.search_index_path.is_file()
+            )
+            payload = {
+                "schema_version": 1,
+                "project_id": project_id,
+                "revision": project.revision,
+                "llm_calls": 0,
+                "source_route": route.to_dict(),
+                "graph_context_path": str(
+                    self.store.project_dir(project_id)
+                    / "agent_artifacts"
+                    / f"graph-context-r{project.revision:03d}.json"
+                ),
+                "graph_status": graph_context.get("graph", {}),
+                "modeler_available": modeler_available,
+                "skill_runtime": self.prompts.runtime_plan(),
+                "analysis": {
+                    "requirements": len(prepared_analysis.requirements),
+                    "evidence": len(prepared_analysis.evidence),
+                    "gaps": len(prepared_analysis.gaps),
+                    "acceptance_tests": len(prepared_analysis.acceptance_tests),
+                    "dirty_clusters": prepared_analysis.dirty_clusters,
+                    "schema_valid": prepared_analysis.schema_valid,
+                    "modeler_passed": prepared_analysis.modeler_passed,
+                },
+            }
+            target = (
+                self.store.project_dir(project_id)
+                / "agent_artifacts"
+                / f"preflight-r{project.revision:03d}.json"
+            )
+            atomic_write_json(target, payload)
+            self.store.append_event(
+                project_id, "preflight_completed", {"artifact": target.name, "llm_calls": 0}
+            )
+            return {**payload, "path": str(target)}
+
     def save_answers(self, project_id: str, answers: dict[str, str]) -> Path:
         with self.store.lock(project_id):
             project = self.store.load(project_id)
             if project.status is not ProjectStatus.REQUIREMENTS_PENDING:
                 raise WorkflowBlockedError("Ответы принимаются только на этапе требований.")
             questions = self.questions(project_id)
+            self.analytics.synchronize_presented_questions(project_id, questions)
             known = {str(item.get("id")) for item in questions}
             unexpected = sorted(set(answers) - known)
             if unexpected:
@@ -319,6 +905,13 @@ class WorkflowService:
             existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
             existing.update({key: value.strip() for key, value in answers.items()})
             atomic_write_json(path, existing)
+            analysis_questions = {item.id for item in self.analytics.ensure(project_id).questions}
+            for question_id, answer in answers.items():
+                if question_id in analysis_questions:
+                    decision_result = self.analytics.record_decision(project_id, question_id, answer)
+                    if decision_result.get("recorded"):
+                        project.revision = max(project.revision, int(decision_result["revision"]))
+            self.store.save(project)
             body = ["# Ответы консультанта", ""]
             for question in questions:
                 question_id = str(question.get("id"))
@@ -351,11 +944,41 @@ class WorkflowService:
             }[stage]
             if stage == "requirements":
                 self._assert_answers_complete(project_id)
+                answers_path = self.store.project_dir(project_id) / "answers.json"
+                answers = json.loads(answers_path.read_text(encoding="utf-8"))
+                synchronized = self.analytics.synchronize_presented_questions(
+                    project_id, self.questions(project_id)
+                )
+                decided = {item.question_id for item in synchronized.decisions}
+                unresolved: list[str] = []
+                for question in synchronized.questions:
+                    if question.id in decided:
+                        continue
+                    decision = self.analytics.record_decision(
+                        project_id, question.id, str(answers.get(question.id, ""))
+                    )
+                    if decision.get("recorded"):
+                        project.revision = max(project.revision, int(decision["revision"]))
+                    else:
+                        unresolved.append(question.id)
+                if unresolved:
+                    raise WorkflowBlockedError(
+                        "Нужен более точный ответ на показанные вопросы: "
+                        + ", ".join(unresolved)
+                    )
+                self.analytics.approve(project_id, "requirements")
                 target = ProjectStatus.REQUIREMENTS_APPROVED
             elif stage == "design":
+                self.analytics.approve(project_id, "design")
                 target = ProjectStatus.DESIGN_APPROVED
             else:
                 self._assert_instruction_verifiable(project_id)
+                self._reconcile_upstream_analytical_approvals(project)
+                self.analytics.approve(
+                    project_id,
+                    "instruction",
+                    verified_instruction_artifact=True,
+                )
                 target = ProjectStatus.SUCCESSFUL
             text = self.store.read_artifact(project_id, artifact_name)
             values = {
@@ -369,6 +992,13 @@ class WorkflowService:
             self.store.write_artifact(
                 project_id, artifact_name, frontmatter.update(text, **values)
             )
+            if stage == "instruction":
+                approved_text = frontmatter.update(text, **values)
+                answer_dir = self.store.project_dir(project_id) / "answers_md"
+                atomic_write_text(
+                    answer_dir / f"instruction-v{project.instruction_version:03d}-approved.md",
+                    approved_text,
+                )
             transition(project, target)
             project.last_error = ""
             self.store.save(project)
@@ -428,6 +1058,32 @@ class WorkflowService:
                 "Исправьте или удалите неподтверждённые шаги и сформируйте новую версию."
             )
 
+    def _reconcile_upstream_analytical_approvals(self, project: Project) -> None:
+        """Repair legacy approval drift using approved artifacts and lifecycle state."""
+        bundle = self.analytics.ensure(project.project_id)
+        if bundle.revision != project.revision:
+            raise WorkflowBlockedError(
+                "Ревизия аналитической модели не совпадает с ревизией проекта."
+            )
+        restored: list[str] = []
+        if bundle.requirements_approved_revision != bundle.revision:
+            self.analytics.approve(project.project_id, "requirements")
+            restored.append("requirements")
+            bundle = self.analytics.load(project.project_id)
+        if bundle.design_approved_revision != bundle.revision:
+            self.analytics.approve(project.project_id, "design")
+            restored.append("design")
+        if restored:
+            self.store.append_event(
+                project.project_id,
+                "analytical_approvals_reconciled",
+                {
+                    "revision": project.revision,
+                    "restored": restored,
+                    "basis": "approved upstream artifacts and feedback_pending lifecycle",
+                },
+            )
+
     def _assert_answers_complete(self, project_id: str) -> None:
         questions = self.questions(project_id)
         path = self.store.project_dir(project_id) / "answers.json"
@@ -479,6 +1135,7 @@ class WorkflowService:
                 "instruction_approval_revoked" if was_successful else "changes_requested",
                 {"by": by, "reason": reason.strip()},
             )
+            self.analytics.revoke_approvals(project_id, from_stage="instruction")
             self.examples.rebuild()
             return project
 

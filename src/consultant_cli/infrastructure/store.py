@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -33,6 +34,17 @@ def slugify(value: str) -> str:
     return value[:64] or "project"
 
 
+def _replace_with_retry(source: str, target: Path) -> None:
+    for attempt in range(5):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -40,7 +52,23 @@ def atomic_write_text(path: Path, text: str) -> None:
     ) as stream:
         stream.write(text)
         temp_name = stream.name
-    os.replace(temp_name, path)
+    try:
+        _replace_with_retry(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as stream:
+        stream.write(data)
+        temp_name = stream.name
+    try:
+        _replace_with_retry(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
@@ -50,10 +78,15 @@ def atomic_write_json(path: Path, data: Any) -> None:
 class RepositoryPaths:
     def __init__(self, root: Path):
         self.root = root.resolve()
-        self.results = self.root / "results"
+        data_dir = os.environ.get("CONSULTANT_DATA_DIR")
+        self.data_root = Path(data_dir).resolve() if data_dir else self.root
+        self.results = self.data_root / "results"
         self.project_trash = self.results / ".trash"
-        self.examples_index = self.root / "examples" / "approved" / "index.ndjson"
-        self.local_config = self.root / "consultant.local.toml"
+        self.examples_index = self.data_root / "examples" / "approved" / "index.ndjson"
+        self.local_config = (
+            self.data_root / "config" / "consultant.local.toml"
+            if data_dir else self.root / "consultant.local.toml"
+        )
 
     @classmethod
     def discover(cls, start: Path | None = None) -> "RepositoryPaths":
@@ -65,25 +98,28 @@ class RepositoryPaths:
             "Не найден корень базы знаний: ожидаются README.md и каталог skills/."
         )
 
+    def installed_graphs(self) -> list[Path]:
+        state_path = self.data_root / "config" / "installed.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            records = sorted(
+                state.get("graphs", {}).values(),
+                key=lambda graph: str(graph.get("installed_at", "")),
+                reverse=True,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return []
+        graph_root = (self.data_root / "graphs").resolve()
+        result = []
+        for graph in records:
+            path = Path(str(graph.get("path", ""))).resolve()
+            if graph_root in path.parents and path.is_dir():
+                result.append(path)
+        return result
+
     def modeler_graphs(self) -> Path:
-        data_dir = os.environ.get("CONSULTANT_DATA_DIR")
-        if data_dir:
-            root = Path(data_dir).resolve()
-            state_path = root / "config" / "installed.json"
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-                graphs = sorted(
-                    state.get("graphs", {}).values(),
-                    key=lambda graph: str(graph.get("installed_at", "")),
-                    reverse=True,
-                )
-                for graph in graphs:
-                    path = Path(str(graph.get("path", ""))).resolve()
-                    if (root / "graphs").resolve() in path.parents and path.is_dir():
-                        return path
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                pass
-        return self.root / "1c_modeler_upgrade" / "graphs"
+        installed = self.installed_graphs()
+        return installed[0] if installed else self.root / "1c_modeler_upgrade" / "graphs"
 
 
 class ProjectStore:
@@ -93,9 +129,20 @@ class ProjectStore:
 
     def project_dir(self, project_id: str) -> Path:
         safe_id = slugify(project_id)
-        if safe_id != project_id:
+        raw = str(project_id).strip()
+        if (
+            not raw
+            or Path(raw).name != raw
+            or raw in {".", ".."}
+            or any(character in raw for character in '\\/:*?"<>|')
+        ):
             raise NotFoundError(f"Некорректный project-id: {project_id}")
-        path = (self.paths.results / safe_id).resolve()
+        # New projects use ASCII slugs. Existing v1-v3 projects may have safe
+        # Cyrillic directory names and must remain readable for revisions/export.
+        existing = self.paths.results / raw
+        if safe_id != raw and not existing.is_dir():
+            raise NotFoundError(f"Некорректный project-id: {project_id}")
+        path = existing.resolve()
         if self.paths.results.resolve() not in path.parents:
             raise NotFoundError("Путь проекта выходит за results/.")
         return path

@@ -20,7 +20,9 @@ class AgentProfile:
     model: str = ""
     secret_env: str = ""
     protocol: str = ""
+    reasoning_effort: str = ""
     timeout_seconds: int = 600
+    max_output_tokens: int = 30000
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "AgentProfile":
@@ -34,7 +36,9 @@ class AgentProfile:
             model=str(data.get("model", "")),
             secret_env=str(data.get("secret_env", "")),
             protocol=str(data.get("protocol", "")),
+            reasoning_effort=str(data.get("reasoning_effort", "")),
             timeout_seconds=int(data.get("timeout_seconds", 600)),
+            max_output_tokens=int(data.get("max_output_tokens", 30000)),
         )
 
 

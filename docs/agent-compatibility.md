@@ -1,18 +1,16 @@
-# Совместимость с агентами
+# Совместимость интерфейсов
 
-Общий контракт — `skills/<name>/SKILL.md` с YAML-полями `name` и `description`, плюс Markdown, YAML, JSON и NDJSON. Канонические правила не зависят от агента.
+Канонический backend один: `consultant.cmd → Python workflow → Wormsoft API roles`.
+Интерфейс не выбирает предметную модель и не пишет артефакты самостоятельно.
 
-| Агент | Минимальный адаптер | Использование |
+| Интерфейс | Адаптер | Расход предметной генерации |
 |---|---|---|
-| Codex | `AGENTS.md`, `skills/` | открыть корень проекта или подключить `codex` как CLI-профиль |
-| Claude Code | `CLAUDE.md`, `.claude/CLAUDE.md` | открыть корень или подключить `claude` как CLI-профиль |
-| Graphify | `.graphify/INSTRUCTIONS.md` | импортировать канонический NDJSON-граф |
-| OpenCode | `AGENTS.md` | открыть корень или подключить `opencode` как CLI-профиль |
-| Другие | `AGENTS.md` и `skills/` | выбрать общий скилл по `description` |
+| Pi/Herdr | `.pi/extensions/newagent-workspace.ts`, `/erp` | Wormsoft API key |
+| Codex | `AGENTS.md`, `.codex/config.toml` | Wormsoft API key через Python |
+| OpenCode | `AGENTS.md` и CLI | Wormsoft API key через Python |
+| Терминал | `consultant.cmd` | Wormsoft API key |
 
-При работе непосредственно во внешнем coding-агенте отдельный API внутри `consultant` не нужен. Для генерации самим терминальным приложением требуется один включённый API- или CLI-профиль.
-
-При прямом открытии корня в Codex или OpenCode всегда используется полный режим:
-обязательные вопросы, апрув требований, проект и схема, второй апрув, инструкция.
-
-Автообнаружение скиллов отличается между продуктами. Адаптер лишь указывает на канонический файл; бизнес-логика не копируется. Настройки подключений хранятся локально в `consultant.local.toml`, а секреты — только в переменных окружения.
+Внешние CLI-профили Codex/OpenCode сохранены только как диагностическая совместимость;
+основной workflow их не вызывает. Секреты не записываются в project.yaml, telemetry
+или Markdown. Все интерфейсы работают с одним каталогом `results/`, поэтому
+approvals, revisions, Modeler и ответы не расходятся.

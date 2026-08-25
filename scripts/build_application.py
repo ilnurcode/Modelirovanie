@@ -12,8 +12,9 @@ from pathlib import Path
 
 
 EXCLUDED = {
-    ".git", ".venv", "application-packages", "build", "consultant.exe", "deployment", "dist",
-    "release", "results", "tests",
+    ".cache", ".git", ".tmp", ".venv", "application-packages", "build",
+    "consultant.exe", "deployment", "dist", "node_modules", "release", "results",
+    "tests",
 }
 
 
@@ -23,9 +24,13 @@ def copy_application(root: Path, stage: Path) -> None:
             continue
         destination = stage / source.name
         if source.name == "1c_modeler_upgrade":
-            shutil.copytree(source, destination, ignore=shutil.ignore_patterns("graphs"))
+            shutil.copytree(
+                source,
+                destination,
+                ignore=shutil.ignore_patterns("graphs", "1c_erp_2_5_source_graph.json"),
+            )
         elif source.is_dir():
-            shutil.copytree(source, destination)
+            shutil.copytree(source, destination, ignore=shutil.ignore_patterns("*.egg-info", "__pycache__", "*.pyc"))
         else:
             shutil.copy2(source, destination)
 
@@ -43,7 +48,11 @@ def write_integrity(stage: Path) -> None:
 def verify_archive(archive: Path, executable: str) -> None:
     with zipfile.ZipFile(archive) as package:
         names = set(package.namelist())
-        if executable not in names or any(name.startswith("1c_modeler_upgrade/graphs/") for name in names):
+        if (
+            executable not in names
+            or any(name.startswith("1c_modeler_upgrade/graphs/") for name in names)
+            or "1c_modeler_upgrade/1c_erp_2_5_source_graph.json" in names
+        ):
             raise RuntimeError("application archive has invalid contents")
         for line in package.read("FILES.sha256").decode("utf-8").splitlines():
             expected, name = line.split("  ", 1)

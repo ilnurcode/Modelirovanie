@@ -36,6 +36,9 @@ class DeploymentScriptsTest(unittest.TestCase):
             graphs.mkdir(parents=True)
             (graphs / "large.json").write_text("graph", encoding="utf-8")
             (root / "1c_modeler_upgrade" / "SKILL.md").write_text("skill", encoding="utf-8")
+            (root / "1c_modeler_upgrade" / "1c_erp_2_5_source_graph.json").write_text(
+                "source graph", encoding="utf-8"
+            )
 
             build_application.copy_application(root, stage)
             (stage / "consultant").write_text("binary", encoding="utf-8")
@@ -48,6 +51,10 @@ class DeploymentScriptsTest(unittest.TestCase):
             build_application.verify_archive(archive, "consultant")
             with zipfile.ZipFile(archive) as package:
                 self.assertNotIn("1c_modeler_upgrade/graphs/large.json", package.namelist())
+                self.assertNotIn(
+                    "1c_modeler_upgrade/1c_erp_2_5_source_graph.json",
+                    package.namelist(),
+                )
 
     def test_setup_archive_entries_are_executable(self):
         with tempfile.TemporaryDirectory() as temp:

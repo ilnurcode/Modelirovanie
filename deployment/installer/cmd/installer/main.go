@@ -6,11 +6,13 @@ import (
 	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,10 +23,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 const (
-	installerVersion = "0.3.0"
+	installerVersion = "0.4.0"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -213,7 +216,7 @@ func installCommand(args []string) error {
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := saveState(root, state); err != nil { return err }
-	if state.ActiveApplication != "" { if err := writeLauncher(root, state); err != nil { return err } }
+	if state.ActiveApplication != "" { if err := writeLauncher(root, state); err != nil { return err }; if err := writeOSIntegration(root, state); err != nil { return err } }
 	log.info("Установка завершена")
 	return nil
 }
@@ -251,7 +254,7 @@ func rollbackCommand(args []string) error {
 	if _, ok := s.Applications[s.PreviousApplication]; !ok { return errors.New("каталог предыдущей версии отсутствует в состоянии") }
 	s.ActiveApplication, s.PreviousApplication = s.PreviousApplication, s.ActiveApplication
 	s.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := saveState(root, s); err != nil { return err }; if err := writeLauncher(root, s); err != nil { return err }
+	if err := saveState(root, s); err != nil { return err }; if err := writeLauncher(root, s); err != nil { return err }; if err := writeOSIntegration(root, s); err != nil { return err }
 	log.info("Выполнен откат на " + s.ActiveApplication); return nil
 }
 
@@ -271,6 +274,7 @@ func uninstallCommand(args []string) error {
 	if !within(filepath.Dir(root), root) || filepath.Clean(root) == filepath.Clean(filepath.VolumeName(root)+string(filepath.Separator)) { return errors.New("небезопасный каталог удаления") }
 	if _, err := os.Stat(filepath.Join(root, "config", "installed.json")); err != nil { return errors.New("installed.json не найден; удаление отменено") }
 	if !*yes { fmt.Printf("Удалить %s? [y/N]: ", root); var answer string; fmt.Scanln(&answer); if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") { return errors.New("удаление отменено") } }
+	if err := removeOSIntegration(root); err != nil { return err }
 	return os.RemoveAll(root)
 }
 
@@ -392,8 +396,50 @@ func writeLauncher(root string, s *State) error {
 	a, ok := s.Applications[s.ActiveApplication]; if !ok { return errors.New("активное приложение отсутствует") }; exe, err := safeJoin(a.Path, a.Executable); if err != nil { return err }
 	if !within(filepath.Join(root, "app"), a.Path) { return errors.New("путь приложения выходит из каталога установки") }
 	if runtime.GOOS == "windows" { body := "@echo off\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755) }
-	escapedRoot := strings.ReplaceAll(root, "'", "'\\''"); body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR='"+escapedRoot+"'\ncd '"+strings.ReplaceAll(a.Path, "'", "'\\''")+"'\nexec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' \"$@\"\n"; return os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755)
+	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755); err != nil { return err }
+	if runtime.GOOS == "darwin" { return os.WriteFile(filepath.Join(root, "1C-Consultant.command"), []byte(body), 0o755) }
+	return nil
 }
+
+func writeOSIntegration(root string, s *State) error {
+	switch runtime.GOOS { case "windows": return runPowerShell(windowsShortcutScript(root, false)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return writeMacOSAppAt(home, root, s.ActiveApplication); default: return nil }
+}
+
+func removeOSIntegration(root string) error {
+	switch runtime.GOOS { case "windows": return runPowerShell(windowsShortcutScript(root, true)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return removeMacOSAppAt(home); default: return nil }
+}
+
+func windowsShortcutScript(root string, remove bool) string {
+	prefix := "$ErrorActionPreference='Stop';$desktop=[Environment]::GetFolderPath('Desktop');$programs=[Environment]::GetFolderPath('Programs');$menu=Join-Path $programs '1C-Consultant';$desktopLink=Join-Path $desktop '1C-Consultant.lnk';$menuLink=Join-Path $menu '1C-Consultant.lnk';"
+	if remove { return prefix+"Remove-Item -LiteralPath $desktopLink,$menuLink -Force -ErrorAction SilentlyContinue;if((Test-Path -LiteralPath $menu)-and-not(Get-ChildItem -LiteralPath $menu -Force)){Remove-Item -LiteralPath $menu -Force}" }
+	return prefix+"$ws=New-Object -ComObject WScript.Shell;[IO.Directory]::CreateDirectory($menu)|Out-Null;$target="+psQuote(filepath.Join(root, "1C-Consultant.cmd"))+";$working="+psQuote(root)+";foreach($path in @($desktopLink,$menuLink)){$shortcut=$ws.CreateShortcut($path);$shortcut.TargetPath=$target;$shortcut.WorkingDirectory=$working;$shortcut.Description='1C-Consultant';$shortcut.Save()}"
+}
+
+func runPowerShell(script string) error {
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script)).CombinedOutput()
+	if err != nil { return fmt.Errorf("не удалось обновить ярлыки Windows: %w: %s", err, strings.TrimSpace(string(out))) }; return nil
+}
+
+func encodePowerShell(script string) string {
+	words := utf16.Encode([]rune(script)); data := make([]byte, len(words)*2); for i, word := range words { data[i*2] = byte(word); data[i*2+1] = byte(word >> 8) }; return base64.StdEncoding.EncodeToString(data)
+}
+
+func writeMacOSAppAt(home, root, version string) error {
+	contents := filepath.Join(home, "Applications", "1C-Consultant.app", "Contents"); macOSDir := filepath.Join(contents, "MacOS")
+	if err := os.MkdirAll(macOSDir, 0o755); err != nil { return err }
+	plist := "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>CFBundleDisplayName</key><string>1C-Consultant</string>\n<key>CFBundleExecutable</key><string>1C-Consultant</string>\n<key>CFBundleIdentifier</key><string>com.ilnurcode.1c-consultant</string>\n<key>CFBundleName</key><string>1C-Consultant</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>"+html.EscapeString(version)+"</string>\n</dict></plist>\n"
+	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(plist), 0o644); err != nil { return err }
+	body := "#!/bin/sh\nexec /usr/bin/open -a Terminal "+shellQuote(filepath.Join(root, "1C-Consultant.command"))+"\n"; return os.WriteFile(filepath.Join(macOSDir, "1C-Consultant"), []byte(body), 0o755)
+}
+
+func removeMacOSAppAt(home string) error {
+	app := filepath.Join(home, "Applications", "1C-Consultant.app"); data, err := os.ReadFile(filepath.Join(app, "Contents", "Info.plist"))
+	if errors.Is(err, os.ErrNotExist) { return nil }; if err != nil { return err }; if !strings.Contains(string(data), "com.ilnurcode.1c-consultant") { return errors.New("приложение ~/Applications/1C-Consultant.app не принадлежит установщику") }; return os.RemoveAll(app)
+}
+
+func psQuote(value string) string { return "'"+strings.ReplaceAll(value, "'", "''")+"'" }
+func shellQuote(value string) string { return "'"+strings.ReplaceAll(value, "'", "'\\''")+"'" }
 
 func dataDir(override string) (string, error) {
 	if override != "" { return filepath.Abs(override) }

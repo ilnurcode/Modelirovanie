@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "policy_id": "newagent-model-policy-v4",
+  "application_version": "4.1.0",
+  "require_runtime_provenance": true,
+  "require_run_journal": true,
+  "reject_unreported_model": true,
+  "required_artifact_fields": [
+    "provider",
+    "model",
+    "parameters",
+    "skill",
+    "skill_version",
+    "run_id"
+  ],
+  "allowed_skills": [
+    "erp-graph-research",
+    "erp-requirements-modeling",
+    "erp-solution-authoring"
+  ],
+  "stage_policy": {
+    "research": {
+      "skill": "erp-graph-research",
+      "model": "deterministic-mcp-graph"
+    },
+    "modeling": {
+      "skill": "erp-requirements-modeling",
+      "model": "agent-runtime-policy.json:erp-translator|erp-process-planner"
+    },
+    "authoring": {
+      "skill": "erp-solution-authoring",
+      "model": "agent-runtime-policy.json:instruction-writer"
+    }
+  },
+  "legacy": {
+    "status": "not-in-primary-request-path"
+  },
+  "external_api_runtime": {
+    "profile": "api-key-multi-agent",
+    "policy_file": "agent-runtime-policy.json",
+    "launcher": "MCP run_api_agent",
+    "provider": "wormsoft-gateway",
+    "provenance_journal": "results/_agent_runs/<run-id>.jsonl"
+  }
+}

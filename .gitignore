@@ -1,6 +1,7 @@
 .DS_Store
 __pycache__/
 *.pyc
+node_modules/
 # Локальные исходники, настройки и сборочные артефакты.
 /source/
 /local/
@@ -8,8 +9,12 @@ __pycache__/
 /dist/
 /application-packages/
 /release/
+/.cache/
+/.tmp/
 /.venv/
 /consultant.local.toml
+/.env
+*.egg-info/
 /*.spec
 /metadata/raw/
 /metadata/cache/

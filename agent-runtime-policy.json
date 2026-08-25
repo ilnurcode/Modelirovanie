@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "default_profile": "api-key-multi-agent",
+  "profile": "codex-thin-interface-api-agents",
+  "provider": "wormsoft-gateway",
+  "api_key_precedence": [
+    "NEWAGENT_API_KEY",
+    "WORMSOFT_API_KEY"
+  ],
+  "api_key_files": [
+    ".env",
+    "../RAGAgent/.env",
+    "../ГОТОВО_К_ОТПРАВКЕ_1C-Consultant/.env"
+  ],
+  "wormsoft_base_url": "https://ai.wormsoft.ru/api/gpt",
+  "openai_base_url": "https://api.openai.com/v1",
+  "allowed_agents": [
+    "erp-translator",
+    "erp-process-planner",
+    "instruction-writer"
+  ],
+  "max_subagent_calls_per_revision": 3,
+  "timeout_sec": 900,
+  "max_input_chars": 140000,
+  "max_output_tokens": 30000,
+  "reuse_identical_calls": true,
+  "automatic_retries": 0,
+  "sequential": true,
+  "interfaces_are_thin": ["pi", "opencode", "codex"],
+  "models_by_agent": {
+    "erp-translator": "wormsoft/agent/low",
+    "erp-process-planner": "wormsoft/agent/medium",
+    "instruction-writer": "wormsoft/agent/high"
+  },
+  "reasoning_effort_by_role": {
+    "erp-translator": "low",
+    "erp-process-planner": "medium",
+    "instruction-writer": "high"
+  }
+}

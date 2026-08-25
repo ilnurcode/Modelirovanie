@@ -51,7 +51,7 @@ jobs:
       - name: Build native application package
         shell: bash
         run: |
-          python -m pip install pyinstaller
+          python -m pip install pyinstaller==6.15.0
           version="$(python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["application_version"])')"
           python scripts/build_application.py \
             --platform "${{ matrix.platform }}" \
@@ -100,15 +100,48 @@ jobs:
           python scripts/validate_repository.py
           if ($LASTEXITCODE -ne 0) { throw "Repository validation failed." }
           "VERSION=$($package.application_version)" >> $env:GITHUB_ENV
+          "GRAPH_VERSION=$($package.configuration_pack.graph_version)" >> $env:GITHUB_ENV
+          "GRAPH_DATABASE_SHA256=$($package.configuration_pack.graph_database_sha256)" >> $env:GITHUB_ENV
+
+      - name: Download graph database
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path private-graph | Out-Null
+          $target = Join-Path $PWD "private-graph/erp_graph_mcp.sqlite"
+          $archive = Join-Path $env:RUNNER_TEMP "erp_graph_mcp.sqlite.zip"
+          gh release download "graph-v$env:GRAPH_VERSION" `
+            --repo "${{ github.repository }}" `
+            --pattern "erp_graph_mcp.sqlite.zip" `
+            --output $archive
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "Graph release graph-v$env:GRAPH_VERSION does not contain erp_graph_mcp.sqlite.zip."
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath private-graph -Force
+          if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            throw "Graph archive does not contain erp_graph_mcp.sqlite."
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+          if ($actual -ne $env:GRAPH_DATABASE_SHA256.ToLowerInvariant()) {
+            throw "Graph database SHA-256 mismatch."
+          }
 
       - name: Build application manifests and graph
         shell: pwsh
+        env:
+          ERP_GRAPH_DATABASE: ${{ github.workspace }}/private-graph/erp_graph_mcp.sqlite
         run: |
+          if (-not (Test-Path -LiteralPath $env:ERP_GRAPH_DATABASE -PathType Leaf)) {
+            throw "Graph database is absent. Download the private graph artifact before build-release.ps1."
+          }
           $baseUrl = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG"
           ./deployment/scripts/build-release.ps1 `
             -BaseUrl $baseUrl `
             -ApplicationDirectory application-packages `
             -OutputDirectory release `
+            -GraphDatabase $env:ERP_GRAPH_DATABASE `
+            -GraphDatabaseSha256 $env:GRAPH_DATABASE_SHA256 `
             -Python python `
             -PythonArguments @()
 

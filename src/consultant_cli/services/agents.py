@@ -70,6 +70,115 @@ class AgentService:
         self.paths = paths
         self.settings = settings
         self.settings_path = settings_path
+        self.last_usage: dict[str, int] = {}
+        self.last_profile: AgentProfile | None = None
+        self.runtime_policy = self._runtime_policy()
+
+    def _runtime_policy(self) -> dict[str, Any]:
+        path = self.paths.root / "agent-runtime-policy.json"
+        if not path.is_file():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AgentError(f"Некорректный agent-runtime-policy.json: {exc}") from exc
+
+    @staticmethod
+    def _dotenv_value(path: Path, names: list[str]) -> tuple[str, str] | None:
+        if not path.is_file():
+            return None
+        for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            name, value = stripped.split("=", 1)
+            name = name.strip()
+            if name not in names:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            if value:
+                return name, value
+        return None
+
+    def _role_secret(self) -> tuple[str, str]:
+        names = [str(value) for value in self.runtime_policy.get("api_key_precedence", [])]
+        if not names:
+            names = ["NEWAGENT_API_KEY", "WORMSOFT_API_KEY"]
+        for name in names:
+            value = os.getenv(name, "").strip()
+            if value:
+                return name, value
+        files = [self.paths.root / ".env"]
+        for value in self.runtime_policy.get("api_key_files", ["../RAGAgent/.env"]):
+            candidate = Path(str(value))
+            files.append(candidate if candidate.is_absolute() else self.paths.root / candidate)
+        for path in files:
+            found = self._dotenv_value(path.resolve(), names)
+            if found:
+                return found
+        raise AgentError(
+            "API-ключ ролей не найден. Задайте NEWAGENT_API_KEY/WORMSOFT_API_KEY "
+            "или сохраните ключ в локальном .env одного из разрешённых источников."
+        )
+
+    def role_profile(self, role: str) -> AgentProfile:
+        allowed = {str(value) for value in self.runtime_policy.get("allowed_agents", [])}
+        if role not in allowed:
+            raise AgentError(f"Роль запрещена runtime policy: {role}")
+        model = str(self.runtime_policy.get("models_by_agent", {}).get(role, ""))
+        if not model:
+            raise AgentError(f"Для роли {role} не задана модель")
+        reasoning = str(
+            self.runtime_policy.get("reasoning_effort_by_role", {}).get(role, "")
+        )
+        return AgentProfile(
+            name=role,
+            kind="openai_compatible",
+            endpoint=str(
+                self.runtime_policy.get("wormsoft_base_url", "https://ai.wormsoft.ru/api/gpt")
+            ),
+            model=model,
+            secret_env="WORMSOFT_API_KEY",
+            protocol="chat_completions",
+            reasoning_effort=reasoning,
+            timeout_seconds=int(self.runtime_policy.get("timeout_sec", 900)),
+            max_output_tokens=int(self.runtime_policy.get("max_output_tokens", 30000)),
+        )
+
+    def generate_role(
+        self,
+        role: str,
+        prompt: str,
+        schema: dict[str, Any],
+        allow_web_search: bool = False,
+    ) -> dict[str, Any]:
+        profile = self.role_profile(role)
+        _secret_name, secret = self._role_secret()
+        self.last_profile = profile
+        return self.generate(
+            profile,
+            prompt,
+            schema,
+            allow_web_search=allow_web_search,
+            secret_override=secret,
+        )
+
+    def api_runtime_status(self) -> dict[str, Any]:
+        key_configured = True
+        try:
+            secret_name, _secret = self._role_secret()
+        except AgentError:
+            key_configured = False
+            secret_name = ""
+        return {
+            "provider": self.runtime_policy.get("provider", "wormsoft-gateway"),
+            "key_configured": key_configured,
+            "key_source": secret_name,
+            "models_by_agent": self.runtime_policy.get("models_by_agent", {}),
+            "automatic_retries": int(self.runtime_policy.get("automatic_retries", 0)),
+        }
 
     def detect(self) -> list[AgentDiagnostic]:
         diagnostics = []
@@ -204,7 +313,14 @@ class AgentService:
         prompt: str,
         schema: dict[str, Any],
         allow_web_search: bool = False,
+        secret_override: str | None = None,
     ) -> dict[str, Any]:
+        self.last_usage = {
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+        }
         if profile.kind == "codex_cli":
             return self._codex(profile, prompt, schema)
         if profile.kind == "claude_cli":
@@ -214,7 +330,7 @@ class AgentService:
         if profile.kind == "custom_cli":
             return self._custom_cli(profile, prompt)
         if profile.kind in {"openai_api", "openai_compatible"}:
-            return self._api(profile, prompt, schema, allow_web_search)
+            return self._api(profile, prompt, schema, allow_web_search, secret_override)
         raise AgentError(f"Неизвестный тип AI-профиля: {profile.kind}")
 
     @staticmethod
@@ -328,8 +444,9 @@ class AgentService:
         prompt: str,
         schema: dict[str, Any],
         allow_web_search: bool,
+        secret_override: str | None = None,
     ) -> dict[str, Any]:
-        secret = os.getenv(profile.secret_env)
+        secret = secret_override or os.getenv(profile.secret_env)
         if not secret:
             raise AgentError(f"Не задана переменная окружения {profile.secret_env}")
         endpoint = profile.endpoint.rstrip("/")
@@ -354,10 +471,22 @@ class AgentService:
                 payload["tools"] = [{"type": "web_search"}]
         else:
             url = endpoint if endpoint.endswith("/chat/completions") else endpoint + "/chat/completions"
+            schema_prompt = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
             payload = {
                 "model": profile.model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            prompt
+                            + "\n\nОБЯЗАТЕЛЬНАЯ JSON SCHEMA ОТВЕТА:\n"
+                            + schema_prompt
+                        ),
+                    }
+                ],
                 "temperature": 0,
+                "max_tokens": profile.max_output_tokens,
+                "response_format": {"type": "json_object"},
             }
         request = urllib.request.Request(
             url,
@@ -373,6 +502,15 @@ class AgentService:
                 data = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise AgentError(f"Ошибка AI API: {exc}") from exc
+        usage = data.get("usage", {}) or {}
+        input_details = usage.get("input_tokens_details", {}) or usage.get("prompt_tokens_details", {}) or {}
+        output_details = usage.get("output_tokens_details", {}) or usage.get("completion_tokens_details", {}) or {}
+        self.last_usage = {
+            "input_tokens": int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0),
+            "cached_input_tokens": int(input_details.get("cached_tokens", 0) or 0),
+            "output_tokens": int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0),
+            "reasoning_tokens": int(output_details.get("reasoning_tokens", 0) or 0),
+        }
         if protocol == "responses":
             text = data.get("output_text", "")
             if not text:
@@ -399,15 +537,24 @@ def extract_json(text: str) -> dict[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         candidate = "\n".join(lines).strip()
+    def parse_with_single_missing_comma(value: str) -> Any:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            if "Expecting ',' delimiter" not in exc.msg:
+                raise
+            repaired = value[: exc.pos] + "," + value[exc.pos :]
+            return json.loads(repaired)
+
     try:
-        value = json.loads(candidate)
+        value = parse_with_single_missing_comma(candidate)
     except json.JSONDecodeError:
         start = candidate.find("{")
         end = candidate.rfind("}")
         if start < 0 or end <= start:
             raise GenerationValidationError("AI не вернул JSON-объект")
         try:
-            value = json.loads(candidate[start : end + 1])
+            value = parse_with_single_missing_comma(candidate[start : end + 1])
         except json.JSONDecodeError as exc:
             raise GenerationValidationError(f"Некорректный JSON от AI: {exc}") from exc
     if not isinstance(value, dict):
