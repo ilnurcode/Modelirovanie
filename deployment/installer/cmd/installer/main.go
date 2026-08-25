@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.4.0"
+	installerVersion = "0.4.1"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -316,7 +316,20 @@ func fetchVerifyExtract(root, rawURL, base string, offline bool, kind, wantHash 
 	destParent := filepath.Dir(dest); if err := os.MkdirAll(destParent, 0o755); err != nil { return err }
 	stage, err := os.MkdirTemp(destParent, ".install-*"); if err != nil { return err }; defer os.RemoveAll(stage)
 	if err := extract(archive, rawURL, stage); err != nil { return err }
-	return os.Rename(stage, dest)
+	return renameWithRetry(stage, dest)
+}
+
+var renameFile = os.Rename
+
+func renameWithRetry(source, target string) error {
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		err = renameFile(source, target)
+		if err == nil { return nil }
+		if !errors.Is(err, os.ErrPermission) { return err }
+		time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+	}
+	return err
 }
 
 func fetch(rawURL, base string, offline bool, kind, target string) error {
@@ -387,8 +400,8 @@ func loadState(root string) (*State, error) {
 func saveState(root string, s *State) error {
 	dir := filepath.Join(root, "config"); if err := os.MkdirAll(dir, 0o755); err != nil { return err }; data, err := json.MarshalIndent(s, "", "  "); if err != nil { return err }; tmp, err := os.CreateTemp(dir, "installed-*.tmp"); if err != nil { return err }; name := tmp.Name(); defer os.Remove(name); if err := tmp.Chmod(0o600); err != nil { tmp.Close(); return err }; if _, err := tmp.Write(append(data, '\n')); err != nil { tmp.Close(); return err }; if err := tmp.Close(); err != nil { return err }
 	target, backup := filepath.Join(dir, "installed.json"), filepath.Join(dir, "installed.json.bak"); _ = os.Remove(backup)
-	if err := os.Rename(target, backup); err != nil && !errors.Is(err, os.ErrNotExist) { return err }
-	if err := os.Rename(name, target); err != nil { _ = os.Rename(backup, target); return err }
+	if err := renameWithRetry(target, backup); err != nil && !errors.Is(err, os.ErrNotExist) { return err }
+	if err := renameWithRetry(name, target); err != nil { _ = renameWithRetry(backup, target); return err }
 	_ = os.Remove(backup); return nil
 }
 

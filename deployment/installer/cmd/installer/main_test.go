@@ -44,6 +44,21 @@ func TestFetchVerifyExtractMovesStagedDirectory(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dest, "consultant.txt")); if err != nil { t.Fatal(err) }; if string(data) != "ok" { t.Fatal("bad extracted content") }
 }
 
+func TestRenameRetriesTemporaryWindowsLock(t *testing.T) {
+	dir := t.TempDir(); source := filepath.Join(dir, "source"); target := filepath.Join(dir, "target")
+	if err := os.WriteFile(source, []byte("ok"), 0o600); err != nil { t.Fatal(err) }
+	realRename := renameFile; attempts := 0
+	renameFile = func(old, new string) error {
+		attempts++
+		if attempts == 1 { return os.ErrPermission }
+		return realRename(old, new)
+	}
+	defer func() { renameFile = realRename }()
+	if err := renameWithRetry(source, target); err != nil { t.Fatal(err) }
+	if attempts != 2 { t.Fatalf("got %d attempts", attempts) }
+	if data, err := os.ReadFile(target); err != nil || string(data) != "ok" { t.Fatal("renamed file missing") }
+}
+
 func TestAskSource(t *testing.T) {
 	args, err := askSource(bufio.NewScanner(strings.NewReader("\n"))); if err != nil || len(args) != 0 { t.Fatal("default online source failed") }
 	args, err = askSource(bufio.NewScanner(strings.NewReader("2\nbundle\n"))); if err != nil || len(args) != 2 || args[0] != "--offline-path" || args[1] != "bundle" { t.Fatal("offline source failed") }
