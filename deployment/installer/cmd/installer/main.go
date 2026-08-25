@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.4.3"
+	installerVersion = "0.4.4"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -539,7 +539,7 @@ func writeLauncher(root string, s *State) error {
 
 func writeOSIntegration(root string, s *State) error {
 	if runtime.GOOS == "darwin" && externalAppManaged() { return nil }
-	switch runtime.GOOS { case "windows": return runPowerShell(windowsShortcutScript(root, false)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return writeMacOSAppAt(home, root, s.ActiveApplication); default: return nil }
+	switch runtime.GOOS { case "windows": if err := copyProgramIcon(root, s, "1c-consultant.ico"); err != nil { return err }; return runPowerShell(windowsShortcutScript(root, false)); case "darwin": home, err := os.UserHomeDir(); if err != nil { return err }; return writeMacOSAppAt(home, root, s.ActiveApplication); default: return nil }
 }
 
 func removeOSIntegration(root string) error {
@@ -552,7 +552,13 @@ func externalAppManaged() bool { return os.Getenv("CONSULTANT_EXTERNAL_APP") == 
 func windowsShortcutScript(root string, remove bool) string {
 	prefix := "$ErrorActionPreference='Stop';$desktop=[Environment]::GetFolderPath('Desktop');$programs=[Environment]::GetFolderPath('Programs');$menu=Join-Path $programs '1C-Consultant';$desktopLink=Join-Path $desktop '1C-Consultant.lnk';$menuLink=Join-Path $menu '1C-Consultant.lnk';"
 	if remove { return prefix+"Remove-Item -LiteralPath $desktopLink,$menuLink -Force -ErrorAction SilentlyContinue;if((Test-Path -LiteralPath $menu)-and-not(Get-ChildItem -LiteralPath $menu -Force)){Remove-Item -LiteralPath $menu -Force}" }
-	return prefix+"$ws=New-Object -ComObject WScript.Shell;[IO.Directory]::CreateDirectory($menu)|Out-Null;$target="+psQuote(filepath.Join(root, "1C-Consultant.cmd"))+";$working="+psQuote(root)+";foreach($path in @($desktopLink,$menuLink)){$shortcut=$ws.CreateShortcut($path);$shortcut.TargetPath=$target;$shortcut.WorkingDirectory=$working;$shortcut.Description='1C-Consultant';$shortcut.Save()}"
+	return prefix+"$ws=New-Object -ComObject WScript.Shell;[IO.Directory]::CreateDirectory($menu)|Out-Null;$target="+psQuote(filepath.Join(root, "1C-Consultant.cmd"))+";$working="+psQuote(root)+";$icon="+psQuote(filepath.Join(root, "config", "1c-consultant.ico"))+";foreach($path in @($desktopLink,$menuLink)){$shortcut=$ws.CreateShortcut($path);$shortcut.TargetPath=$target;$shortcut.WorkingDirectory=$working;$shortcut.IconLocation=$icon;$shortcut.Description='1C-Consultant';$shortcut.Save()}"
+}
+
+func copyProgramIcon(root string, s *State, name string) error {
+	a, ok := s.Applications[s.ActiveApplication]; if !ok { return errors.New("активное приложение отсутствует") }
+	source, err := safeJoin(a.Path, filepath.Join("assets", name)); if err != nil { return err }; data, err := os.ReadFile(source); if errors.Is(err, os.ErrNotExist) { return nil }; if err != nil { return fmt.Errorf("иконка программы: %w", err) }
+	dest := filepath.Join(root, "config", name); if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil { return err }; return os.WriteFile(dest, data, 0o644)
 }
 
 func runPowerShell(script string) error {
@@ -565,9 +571,10 @@ func encodePowerShell(script string) string {
 }
 
 func writeMacOSAppAt(home, root, version string) error {
-	contents := filepath.Join(home, "Applications", "1C-Consultant.app", "Contents"); macOSDir := filepath.Join(contents, "MacOS")
-	if err := os.MkdirAll(macOSDir, 0o755); err != nil { return err }
-	plist := "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>CFBundleDisplayName</key><string>1C-Consultant</string>\n<key>CFBundleExecutable</key><string>1C-Consultant</string>\n<key>CFBundleIdentifier</key><string>com.ilnurcode.1c-consultant</string>\n<key>CFBundleName</key><string>1C-Consultant</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>"+html.EscapeString(version)+"</string>\n</dict></plist>\n"
+	contents := filepath.Join(home, "Applications", "1C-Consultant.app", "Contents"); macOSDir := filepath.Join(contents, "MacOS"); resources := filepath.Join(contents, "Resources")
+	if err := os.MkdirAll(macOSDir, 0o755); err != nil { return err }; if err := os.MkdirAll(resources, 0o755); err != nil { return err }
+	icon, err := os.ReadFile(filepath.Join(root, "app", version, "assets", "1c-consultant.icns")); if err == nil { if err := os.WriteFile(filepath.Join(resources, "1C-Consultant.icns"), icon, 0o644); err != nil { return err } } else if !errors.Is(err, os.ErrNotExist) { return fmt.Errorf("иконка программы: %w", err) }
+	plist := "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>CFBundleDisplayName</key><string>1C-Consultant</string>\n<key>CFBundleExecutable</key><string>1C-Consultant</string>\n<key>CFBundleIconFile</key><string>1C-Consultant.icns</string>\n<key>CFBundleIdentifier</key><string>com.ilnurcode.1c-consultant</string>\n<key>CFBundleName</key><string>1C-Consultant</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>"+html.EscapeString(version)+"</string>\n</dict></plist>\n"
 	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(plist), 0o644); err != nil { return err }
 	body := "#!/bin/sh\nexec /usr/bin/open -a Terminal "+shellQuote(filepath.Join(root, "1C-Consultant.command"))+"\n"; return os.WriteFile(filepath.Join(macOSDir, "1C-Consultant"), []byte(body), 0o755)
 }

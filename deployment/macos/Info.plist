@@ -5,6 +5,7 @@
   <key>CFBundleDevelopmentRegion</key><string>ru</string>
   <key>CFBundleDisplayName</key><string>1C-Consultant</string>
   <key>CFBundleExecutable</key><string>1C-Consultant</string>
+  <key>CFBundleIconFile</key><string>1C-Consultant.icns</string>
   <key>CFBundleIdentifier</key><string>com.ilnurcode.1c-consultant</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>1C-Consultant</string>

@@ -69,6 +69,7 @@ func TestWindowsShortcutScript(t *testing.T) {
 	script := windowsShortcutScript(`C:\Users\O'Brien\1C-Consultant`, false)
 	if !strings.Contains(script, `'C:\Users\O''Brien\1C-Consultant'`) { t.Fatal("PowerShell path was not quoted") }
 	if !strings.Contains(script, "CreateShortcut") || !strings.Contains(script, "desktopLink") || !strings.Contains(script, "menuLink") { t.Fatal("desktop or Start Menu shortcut missing") }
+	if !strings.Contains(script, "IconLocation") || !strings.Contains(script, "1c-consultant.ico") { t.Fatal("program icon missing") }
 }
 
 func TestEncodePowerShell(t *testing.T) {
@@ -77,9 +78,10 @@ func TestEncodePowerShell(t *testing.T) {
 }
 
 func TestWriteAndRemoveMacOSApp(t *testing.T) {
-	home := t.TempDir(); root := "/tmp/1C Consultant's"; if err := writeMacOSAppAt(home, root, "0.8.0"); err != nil { t.Fatal(err) }
+	home := t.TempDir(); root := filepath.Join(t.TempDir(), "1C Consultant's"); iconDir := filepath.Join(root, "app", "0.8.0", "assets"); if err := os.MkdirAll(iconDir, 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(iconDir, "1c-consultant.icns"), []byte("icon"), 0o644); err != nil { t.Fatal(err) }; if err := writeMacOSAppAt(home, root, "0.8.0"); err != nil { t.Fatal(err) }
 	app := filepath.Join(home, "Applications", "1C-Consultant.app", "Contents"); plist, err := os.ReadFile(filepath.Join(app, "Info.plist")); if err != nil { t.Fatal(err) }
-	if !strings.Contains(string(plist), "com.ilnurcode.1c-consultant") || !strings.Contains(string(plist), "0.8.0") { t.Fatal("invalid Info.plist") }
+	if !strings.Contains(string(plist), "com.ilnurcode.1c-consultant") || !strings.Contains(string(plist), "0.8.0") || !strings.Contains(string(plist), "1C-Consultant.icns") { t.Fatal("invalid Info.plist") }
+	if _, err := os.Stat(filepath.Join(app, "Resources", "1C-Consultant.icns")); err != nil { t.Fatal("macOS icon missing") }
 	launcher, err := os.ReadFile(filepath.Join(app, "MacOS", "1C-Consultant")); if err != nil { t.Fatal(err) }; if !strings.Contains(string(launcher), shellQuote(filepath.Join(root, "1C-Consultant.command"))) { t.Fatal("macOS launcher path was not quoted") }
 	if err := removeMacOSAppAt(home); err != nil { t.Fatal(err) }; if _, err := os.Stat(filepath.Join(home, "Applications", "1C-Consultant.app")); !errors.Is(err, os.ErrNotExist) { t.Fatal("macOS app was not removed") }
 }

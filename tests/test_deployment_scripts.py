@@ -71,6 +71,8 @@ class DeploymentScriptsTest(unittest.TestCase):
         launcher = (ROOT / "deployment" / "macos" / "launcher.sh").read_text(encoding="utf-8")
         self.assertEqual("APPL", plist["CFBundlePackageType"])
         self.assertEqual("1C-Consultant", plist["CFBundleExecutable"])
+        self.assertEqual("1C-Consultant.icns", plist["CFBundleIconFile"])
+        self.assertIn("1C-Consultant.icns", (ROOT / "deployment" / "scripts" / "build-macos-pkg.sh").read_text(encoding="utf-8"))
         self.assertIn("Library/Application Support/1C-Consultant", launcher)
         self.assertIn("CONSULTANT_EXTERNAL_APP=1", launcher)
         self.assertIn("application \"Terminal\"", launcher)

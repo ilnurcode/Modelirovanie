@@ -22,6 +22,8 @@ evidence/GAP maps, traceability, acceptance tests, incremental rebuild и пол
 ## Скачать и установить
 
 Готовые сборки находятся в [последнем GitHub Release](https://github.com/ilnurcode/Modelirovanie/releases/latest).
+
+Иконка жирафа предоставлена [Icons8](https://icons8.com/).
 Скачайте setup-архив своей ОС и архитектуры, распакуйте его и откройте launcher:
 
 | Система | Архив | Что открыть |

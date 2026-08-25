@@ -1,12 +1,15 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
-    [string]$Version = "0.4.3"
+    [string]$Version = "0.4.4"
 )
 
 $ErrorActionPreference = "Stop"
 $deploymentRoot = Split-Path -Parent $PSScriptRoot
 $installerRoot = Join-Path $deploymentRoot "installer"
+$projectRoot = Split-Path -Parent $deploymentRoot
+$icon = Join-Path $projectRoot "assets\1c-consultant.ico"
+$windowsResource = Join-Path $installerRoot "cmd\installer\rsrc_windows_amd64.syso"
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $deploymentRoot "dist" }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
@@ -25,6 +28,8 @@ $targets = @(
 
 Push-Location $installerRoot
 try {
+    & go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico $icon -o $windowsResource
+    if ($LASTEXITCODE -ne 0) { throw "Не удалось встроить иконку Windows." }
     & go test ./...
     if ($LASTEXITCODE -ne 0) { throw "go test завершился с кодом $LASTEXITCODE" }
     foreach ($target in $targets) {
@@ -37,6 +42,7 @@ try {
     }
 }
 finally {
+    Remove-Item -LiteralPath $windowsResource -Force -ErrorAction SilentlyContinue
     Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     Pop-Location
 }

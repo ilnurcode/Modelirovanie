@@ -71,17 +71,17 @@ def main() -> int:
     version = json.loads((root / "PACKAGE_MANIFEST.json").read_text(encoding="utf-8"))["application_version"]
     executable = "consultant.exe" if args.platform == "windows" else "consultant"
     dist = root / "dist" / f"{args.platform}-{args.arch}"
-    subprocess.run(
-        [
-            sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
-            "--name", "consultant", "--paths", str(root / "src"),
-            "--distpath", str(dist),
-            "--workpath", str(root / "build" / f"pyinstaller-{args.platform}-{args.arch}"),
-            "--specpath", str(root / "build"),
-            str(root / "src" / "consultant_cli" / "__main__.py"),
-        ],
-        check=True,
-    )
+    command = [
+        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
+        "--name", "consultant", "--paths", str(root / "src"),
+        "--distpath", str(dist),
+        "--workpath", str(root / "build" / f"pyinstaller-{args.platform}-{args.arch}"),
+        "--specpath", str(root / "build"),
+    ]
+    if args.platform == "windows":
+        command.extend(("--icon", str(root / "assets" / "1c-consultant.ico")))
+    command.append(str(root / "src" / "consultant_cli" / "__main__.py"))
+    subprocess.run(command, check=True)
     binary = dist / executable
     binary.chmod(binary.stat().st_mode | 0o755)
     actual_version = subprocess.check_output([binary, "--version"], text=True).strip()

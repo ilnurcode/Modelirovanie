@@ -29,6 +29,7 @@ mkdir -p "$app/MacOS" "$app/Resources" "$(dirname -- "$output")"
 cp "$project_root/deployment/macos/Info.plist" "$app/Info.plist"
 sed -i '' "s/__VERSION__/$version/g" "$app/Info.plist"
 cp "$project_root/deployment/macos/launcher.sh" "$app/MacOS/1C-Consultant"
+cp "$project_root/assets/1c-consultant.icns" "$app/Resources/1C-Consultant.icns"
 chmod 755 "$app/MacOS/1C-Consultant" "$app/Resources/1c-consultant-installer"
 
 sh -n "$app/MacOS/1C-Consultant"
@@ -41,4 +42,5 @@ pkgbuild \
 
 pkgutil --payload-files "$output" | grep -Fq 'Applications/1C-Consultant.app/Contents/MacOS/1C-Consultant'
 pkgutil --payload-files "$output" | grep -Fq 'Applications/1C-Consultant.app/Contents/Resources/1c-consultant-installer'
+pkgutil --payload-files "$output" | grep -Fq 'Applications/1C-Consultant.app/Contents/Resources/1C-Consultant.icns'
 echo "$output"
