@@ -4,7 +4,10 @@
 
 Codex, OpenCode и Pi — только интерфейсы. Канонический request path:
 
-`интерфейс → consultant.cmd → Python workflow → Python hybrid graph search → Wormsoft API roles`.
+`интерфейс → consultant.cmd/consultant.ps1 → Python workflow → Python hybrid graph search → Wormsoft API roles`.
+
+В установленной версии запускай `consultant.cmd` на Windows или `consultant.ps1`
+на macOS/Linux: обёртка сама найдёт скомпилированный сервис и каталог данных.
 
 MCP не требуется и не должен запускаться. Смысловые артефакты создают только роли,
 заданные в `agent-runtime-policy.json`:

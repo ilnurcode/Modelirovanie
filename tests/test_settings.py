@@ -18,6 +18,7 @@ class SettingsTest(unittest.TestCase):
             path = Path(temp) / "consultant.local.toml"
             settings = AppSettings(
                 default_agent="codex-local",
+                preferred_interface="codex",
                 agents={
                     "codex-local": AgentProfile(
                         name="codex-local", kind="codex_cli", command="codex"
@@ -27,9 +28,9 @@ class SettingsTest(unittest.TestCase):
             save_settings(path, settings)
             loaded = load_settings(path)
             self.assertEqual("codex-local", loaded.default_agent)
+            self.assertEqual("codex", loaded.preferred_interface)
             self.assertEqual("codex_cli", loaded.agents["codex-local"].kind)
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.5.0"
+	installerVersion = "0.5.1"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -595,6 +595,7 @@ func writeLauncher(root string, s *State) error {
 		body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nif [ \"$#\" -eq 0 ]; then\n  printf '\\n1. Запустить 1C-Consultant\\n2. Управление установкой и графами\\n"+piMenu+"0. Выход\\nВыберите действие: '\n  read -r choice\n  case \"$choice\" in\n    2) exec "+shellQuote(installer)+" ;;\n"+piAction+"    0) exit 0 ;;\n  esac\nfi\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
 		if err := os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755); err != nil { return err }; if runtime.GOOS == "darwin" { if err := os.WriteFile(filepath.Join(root, "1C-Consultant.command"), []byte(body), 0o755); err != nil { return err } }
 	}
+	if err := writeAgentWorkspace(root, exe, a.Path); err != nil { return err }
 	if s.Pi != nil { return writePiLauncher(root, s, exe, a.Path) }; return nil
 }
 
@@ -602,6 +603,18 @@ func writePiLauncher(root string, s *State, appExecutable, appPath string) error
 	if s.Pi == nil { return errors.New("Pi не установлен") }; if !within(filepath.Join(root, "tools", "node"), s.Pi.NodeExecutable) || !within(filepath.Join(root, "tools", "pi"), s.Pi.CLI) { return errors.New("пути Pi выходят из каталога установки") }
 	if runtime.GOOS == "windows" { body := "@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_INSTALL_ROOT="+root+"\"\r\nset \"CONSULTANT_REPO="+appPath+"\"\r\nset \"CONSULTANT_EXECUTABLE="+appExecutable+"\"\r\ncd /d \""+appPath+"\"\r\n\""+s.Pi.NodeExecutable+"\" \""+s.Pi.CLI+"\" --approve --offline --model wormsoft-gateway/wormsoft/agent/medium --name \"NewAgent ERP\"\r\nendlocal\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant-Pi.cmd"), []byte(body), 0o755) }
 	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nexport CONSULTANT_REPO="+shellQuote(appPath)+"\nexport CONSULTANT_EXECUTABLE="+shellQuote(appExecutable)+"\ncd "+shellQuote(appPath)+"\nexec "+shellQuote(s.Pi.NodeExecutable)+" "+shellQuote(s.Pi.CLI)+" --approve --offline --model wormsoft-gateway/wormsoft/agent/medium --name 'NewAgent ERP'\n"; return os.WriteFile(filepath.Join(root, "1c-consultant-pi"), []byte(body), 0o755)
+}
+
+func writeAgentWorkspace(root, appExecutable, appPath string) error {
+	instructions, err := os.ReadFile(filepath.Join(appPath, "AGENTS.md")); if err != nil { return fmt.Errorf("инструкции внешних интерфейсов: %w", err) }
+	instructions = append(instructions, []byte("\n## Установленная версия\n\nРабочий каталог содержит установленный 1C-Consultant. На Windows вызывай `consultant.cmd`, на macOS/Linux — `./consultant`. Активный проект записан в `config/selected-project.txt`. Не изменяй файлы в `app/`, `graphs/`, `installer/` и `tools/`.\n")...)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), instructions, 0o644); err != nil { return err }
+	if runtime.GOOS == "windows" {
+		body := "@echo off\r\nchcp 65001 >nul\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_REPO="+appPath+"\"\r\ncd /d \""+appPath+"\"\r\n\""+appExecutable+"\" --repo \""+appPath+"\" %*\r\n"
+		return os.WriteFile(filepath.Join(root, "consultant.cmd"), []byte(body), 0o755)
+	}
+	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_REPO="+shellQuote(appPath)+"\ncd "+shellQuote(appPath)+"\nexec "+shellQuote(appExecutable)+" --repo "+shellQuote(appPath)+" \"$@\"\n"
+	return os.WriteFile(filepath.Join(root, "consultant"), []byte(body), 0o755)
 }
 
 func writeOSIntegration(root string, s *State) error {

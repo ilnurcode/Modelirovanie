@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 from consultant_cli.app import Application
 from consultant_cli.domain.models import ProjectStatus, project_state
-from consultant_cli.infrastructure.settings import AgentProfile
+from consultant_cli.infrastructure.settings import AgentProfile, save_settings
+from consultant_cli.infrastructure.store import atomic_write_text
 from consultant_cli.ui import ConsoleUI
 
 
 ui = ConsoleUI()
+
+INTERFACES = {
+    "builtin": "Встроенный интерфейс 1C-Consultant",
+    "codex": "Codex Desktop",
+    "opencode": "OpenCode",
+    "claude": "Claude Code",
+    "pi": "Pi",
+}
 
 
 def ask(prompt: str, default: str = "") -> str:
@@ -87,6 +97,7 @@ def run_menu(app: Application) -> int:
             [
                 f"Проектов: {len(projects)}",
                 f"AI: {app.settings.default_agent or 'не подключён'}",
+                f"Интерфейс: {INTERFACES.get(app.settings.preferred_interface, 'встроенный')}",
                 "ERP XML: индекс 2.5.27.49 подключён",
             ],
             "cyan",
@@ -96,7 +107,8 @@ def run_menu(app: Application) -> int:
                 ("1", "Новый проект", "Мастер создания инструкции и схемы"),
                 ("2", "Мои проекты", "Выбрать существующий проект"),
                 ("3", "Подключить AI", "Настроить способ генерации"),
-                ("4", "Система и справка", "База знаний, проверка и помощь"),
+                ("4", "Выбрать интерфейс", "Программа, Codex, OpenCode, Claude или Pi"),
+                ("5", "Система и справка", "База знаний, проверка и помощь"),
                 ("0", "Выход", "Закрыть приложение"),
             ]
         )
@@ -115,6 +127,8 @@ def run_menu(app: Application) -> int:
         elif choice == "3":
             agent_menu(app)
         elif choice == "4":
+            interface_menu(app)
+        elif choice == "5":
             system_menu(app)
 
 
@@ -215,7 +229,8 @@ def project_menu(app: Application, project_id: str) -> None:
                 ("2", "Материалы", "Инструкция, схема и источники"),
                 ("3", "Изменить", "Настройки или замечания"),
                 ("4", "Экспортировать", "Сохранить результат в файл"),
-                ("5", "Ещё", "Проверка и внешний агент"),
+                ("5", "Открыть во внешнем интерфейсе", INTERFACES.get(app.settings.preferred_interface, "Выбрать интерфейс")),
+                ("6", "Ещё", "Проверка и удаление"),
                 ("0", "Назад", "Вернуться в главное меню"),
             ]
         )
@@ -236,6 +251,15 @@ def project_menu(app: Application, project_id: str) -> None:
                 ui.success(f"Экспорт готов: {path}")
                 ui.pause()
             elif choice == "5":
+                if app.settings.preferred_interface == "builtin":
+                    interface_menu(app)
+                if app.settings.preferred_interface != "builtin":
+                    command = open_external_agent(
+                        app, project_id, app.settings.preferred_interface, launch=True
+                    )
+                    ui.info("Запущено: " + subprocess.list2cmdline(command))
+                    ui.pause()
+            elif choice == "6":
                 if project_more_menu(app, project_id):
                     return
         except Exception as exc:
@@ -347,8 +371,7 @@ def project_more_menu(app: Application, project_id: str) -> bool:
     ui.menu(
         [
             ("1", "Проверить проект", "Проверка файлов и статусов"),
-            ("2", "Открыть во внешнем агенте", "Codex, Claude Code или OpenCode"),
-            ("3", "Удалить проект", "Убрать из списка и перенести в корзину"),
+            ("2", "Удалить проект", "Убрать из списка и перенести в корзину"),
             ("0", "Назад", "Вернуться в проект"),
         ]
     )
@@ -356,12 +379,6 @@ def project_more_menu(app: Application, project_id: str) -> bool:
     if choice == "1":
         show_project_validation(app, project_id)
     elif choice == "2":
-        agent = ask("Агент codex/claude/opencode", "codex")
-        command = open_external_agent(app, project_id, agent, yes_no("Запустить сейчас", False))
-        ui.info("Команда: " + subprocess.list2cmdline(command))
-        ui.info("Внутреннее AI-подключение приложения здесь не требуется.")
-        ui.pause()
-    elif choice == "3":
         project = app.store.load(project_id)
         ui.warning("Проект исчезнет из списка, но его папка сохранится в results/.trash/.")
         confirmation = ask(f"Для удаления введите ID проекта: {project.project_id}")
@@ -374,6 +391,36 @@ def project_more_menu(app: Application, project_id: str) -> bool:
         ui.pause()
         return True
     return False
+
+
+def interface_menu(app: Application) -> None:
+    ui.clear()
+    ui.header("Внешний интерфейс", breadcrumb="Главное меню › Интерфейс")
+    keys = list(INTERFACES)
+    ui.menu(
+        [
+            (str(index), label, "текущий" if key == app.settings.preferred_interface else "")
+            for index, (key, label) in enumerate(INTERFACES.items(), 1)
+        ]
+        + [("0", "Назад", "Не изменять")]
+    )
+    choice = ask("Выберите интерфейс")
+    if choice == "0":
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(keys):
+        ui.error("Неизвестный интерфейс.")
+        ui.pause()
+        return
+    selected = keys[int(choice) - 1]
+    app.settings.preferred_interface = selected
+    save_settings(app.paths.local_config, app.settings)
+    ui.success(f"Выбран интерфейс: {INTERFACES[selected]}")
+    if selected != "builtin":
+        if interface_available(app, selected):
+            ui.info("Интерфейс найден. Откройте проект и выберите пункт 5.")
+        else:
+            ui.warning(f"{INTERFACES[selected]} пока не установлен или не найден.")
+    ui.pause()
 
 
 def show_artifact(
@@ -841,18 +888,48 @@ def show_help(app: Application) -> None:
 def open_external_agent(
     app: Application, project_id: str, agent: str, launch: bool = False
 ) -> list[str]:
-    project_dir = app.store.project_dir(project_id)
+    workspace = (
+        app.paths.data_root
+        if (app.paths.data_root / "AGENTS.md").is_file()
+        else app.paths.root
+    )
     command_name = {"codex": "codex", "claude": "claude", "opencode": "opencode"}.get(agent)
+    if agent == "pi":
+        launcher = app.paths.data_root / (
+            "1C-Consultant-Pi.cmd" if os.name == "nt" else "1c-consultant-pi"
+        )
+        command = ["cmd.exe", "/c", str(launcher)] if os.name == "nt" else [str(launcher)]
+        executable = str(launcher) if launcher.is_file() else ""
+    else:
+        executable = shutil.which(command_name or "") or ""
+        command = [executable or command_name or agent]
+        if agent == "codex":
+            command.extend(["app", str(workspace)])
+        elif agent == "opencode":
+            command.append(str(workspace))
     if not command_name:
-        raise ValueError(f"Неизвестный агент: {agent}")
-    executable = shutil.which(command_name)
-    command = [executable or command_name]
-    if agent == "codex":
-        command.extend(["-C", str(project_dir)])
-    elif agent == "opencode":
-        command.append(str(project_dir))
+        if agent != "pi":
+            raise ValueError(f"Неизвестный агент: {agent}")
     if launch:
         if not executable:
-            raise FileNotFoundError(f"{command_name} не найден в PATH")
-        subprocess.run(command, cwd=app.paths.root, check=False)
+            raise FileNotFoundError(f"{INTERFACES[agent]} не найден. Сначала установите его.")
+        env = os.environ.copy()
+        env["CONSULTANT_DATA_DIR"] = str(app.paths.data_root)
+        env["CONSULTANT_REPO"] = str(app.paths.root)
+        if project_id:
+            app.store.load(project_id)
+            env["CONSULTANT_PROJECT_ID"] = project_id
+            atomic_write_text(
+                app.paths.data_root / "config" / "selected-project.txt",
+                project_id + "\n",
+            )
+        subprocess.run(command, cwd=workspace, env=env, check=False)
     return command
+
+
+def interface_available(app: Application, agent: str) -> bool:
+    if agent == "pi":
+        name = "1C-Consultant-Pi.cmd" if os.name == "nt" else "1c-consultant-pi"
+        return (app.paths.data_root / name).is_file()
+    command_name = {"codex": "codex", "claude": "claude", "opencode": "opencode"}.get(agent)
+    return bool(command_name and shutil.which(command_name))

@@ -45,6 +45,7 @@ class AgentProfile:
 @dataclass(slots=True)
 class AppSettings:
     default_agent: str = ""
+    preferred_interface: str = "builtin"
     results_dir: str = "results"
     default_output: list[str] = field(
         default_factory=lambda: ["markdown", "json", "html"]
@@ -65,6 +66,7 @@ def load_settings(path: Path) -> AppSettings:
     }
     return AppSettings(
         default_agent=str(data.get("default_agent", "")),
+        preferred_interface=str(data.get("preferred_interface", "builtin")),
         results_dir=str(data.get("results_dir", "results")),
         default_output=[str(item) for item in data.get("default_output", [])],
         mask_sensitive_data=bool(privacy.get("mask_sensitive_data", True)),
@@ -86,6 +88,7 @@ def _toml_scalar(value: Any) -> str:
 def save_settings(path: Path, settings: AppSettings) -> None:
     lines = [
         f"default_agent = {_toml_scalar(settings.default_agent)}",
+        f"preferred_interface = {_toml_scalar(settings.preferred_interface)}",
         f"results_dir = {_toml_scalar(settings.results_dir)}",
         f"default_output = {_toml_scalar(settings.default_output)}",
         "",
