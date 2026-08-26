@@ -26,6 +26,12 @@ class CliParserTest(unittest.TestCase):
                 ]
             )
 
+    def test_new_project_defaults_to_hybrid_result(self):
+        args = parser().parse_args(
+            ["new", "Закупка", "--prompt", "Создать процесс и инструкцию"]
+        )
+        self.assertEqual("hybrid", args.deliverable)
+
     def test_agent_executable_does_not_replace_top_level_command(self):
         args = parser().parse_args(
             [

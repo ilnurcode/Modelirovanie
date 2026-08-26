@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import copy
 import hashlib
+import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -88,7 +90,7 @@ class WorkflowService:
         release: str = "",
         agent_profile: str = "",
         detail_level: str = "balanced",
-        deliverable: str = "consultant",
+        deliverable: str = "hybrid",
         project_id: str | None = None,
         source_name: str = "",
         source_bytes: bytes | None = None,
@@ -100,7 +102,7 @@ class WorkflowService:
                 "Поддерживается только полный режим с обязательными вопросами."
             )
         selected_mode = ProjectMode.FULL
-        if deliverable not in {"process", "consultant", "vanessa"}:
+        if deliverable not in {"hybrid", "process", "consultant", "vanessa"}:
             raise InvalidConfigurationError(f"Неизвестный формат результата: {deliverable}")
         base_id = slugify(project_id or title)
         candidate = base_id
@@ -180,7 +182,7 @@ class WorkflowService:
                 project.generation.detail_level = str(values["detail_level"])
             if "deliverable" in values:
                 deliverable = str(values["deliverable"])
-                if deliverable not in {"process", "consultant", "vanessa"}:
+                if deliverable not in {"hybrid", "process", "consultant", "vanessa"}:
                     raise WorkflowBlockedError(f"Неизвестный формат результата: {deliverable}")
                 project.generation.deliverable = deliverable
             if "internet_policy" in values:
@@ -303,6 +305,9 @@ class WorkflowService:
                 for item in self.telemetry.records(project_id)
                 if item.get("skill") == role
             )
+            trace_stem = f"{stage}-r{project.revision:03d}-a{attempt:03d}"
+            prompt_path, execution_path = self._trace_paths(project_id, trace_stem)
+            atomic_write_text(prompt_path, prompt)
             self.store.append_event(
                 project_id,
                 "api_role_started",
@@ -331,12 +336,34 @@ class WorkflowService:
                         and project.sources.internet_policy != "forbidden"
                     ),
                 )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                execution = self._write_execution_trace(
+                    execution_path,
+                    prompt_path=prompt_path,
+                    role=role,
+                    profile=profile,
+                    attempt=attempt,
+                    status="api_response_received",
+                    duration_ms=elapsed_ms,
+                    usage=getattr(self.agents, "last_usage", {}),
+                )
                 raw_result_path = (
                     self.store.project_dir(project_id)
                     / "agent_artifacts"
                     / f"{stage}-raw-r{project.revision:03d}-a{attempt:03d}.json"
                 )
                 atomic_write_json(raw_result_path, result)
+                question_repairs = (
+                    self._supplement_question_coverage(project_id, result)
+                    if stage == "questions"
+                    else []
+                )
+                if question_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "question_coverage_supplemented",
+                        {"questions": question_repairs, "llm_calls": 0},
+                    )
                 ref_repairs = self.contract.normalize_known_project_refs(result, project)
                 if ref_repairs:
                     self.store.append_event(
@@ -350,6 +377,24 @@ class WorkflowService:
                         project_id,
                         "missing_local_refs_normalized",
                         {"stage": stage, "repairs": missing_ref_repairs},
+                    )
+                unavailable_source_repairs = (
+                    self.contract.normalize_unavailable_inferred_sources(result)
+                )
+                if unavailable_source_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "unavailable_inferred_sources_removed",
+                        {"stage": stage, "repairs": unavailable_source_repairs},
+                    )
+                official_url_repairs = self.contract.normalize_required_official_url(
+                    result, route
+                )
+                if official_url_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "official_url_restored_from_routed_knowledge",
+                        {"stage": stage, "repairs": official_url_repairs, "network_calls": 0},
                     )
                 flow_repairs = (
                     self.graph.normalize_document_flow(result)
@@ -380,6 +425,24 @@ class WorkflowService:
                         "ui_paths_expanded_from_modeler",
                         {"stage": stage, "repairs": modeler_path_repairs},
                     )
+                vanessa_path_repairs = self.contract.normalize_vanessa_ui_paths(
+                    result, modeler_path_repairs
+                )
+                if vanessa_path_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "vanessa_ui_paths_expanded_from_modeler",
+                        {"stage": stage, "repairs": vanessa_path_repairs},
+                    )
+                verification_status_repairs = (
+                    self.contract.normalize_known_verification_statuses(result)
+                )
+                if verification_status_repairs:
+                    self.store.append_event(
+                        project_id,
+                        "known_verification_statuses_normalized",
+                        {"stage": stage, "repairs": verification_status_repairs},
+                    )
                 self.contract.validate(result, stage, project, route)
                 flow_errors = self.graph.document_flow_errors(result) if stage != "questions" else []
                 if flow_errors:
@@ -398,6 +461,24 @@ class WorkflowService:
                     {"role": role, "model": profile.model, "artifact": artifact_path.name},
                 )
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                execution = self._write_execution_trace(
+                    execution_path,
+                    prompt_path=prompt_path,
+                    role=role,
+                    profile=profile,
+                    attempt=attempt,
+                    status="completed",
+                    duration_ms=elapsed_ms,
+                    usage=getattr(self.agents, "last_usage", {}),
+                )
+                self._attach_execution_trace(artifact_path, prompt_path, execution)
+                if stage == "instruction":
+                    atomic_write_text(
+                        self.store.project_dir(project_id)
+                        / "answers_md"
+                        / f"instruction-v{project.instruction_version:03d}-draft.md",
+                        artifact_path.read_text(encoding="utf-8"),
+                    )
                 self.telemetry.record(
                     project_id,
                     provider=profile.kind,
@@ -422,6 +503,17 @@ class WorkflowService:
                 self.store.save(project)
                 self.store.append_event(project_id, "generation_failed", {"error": str(exc)})
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._write_execution_trace(
+                    execution_path,
+                    prompt_path=prompt_path,
+                    role=role,
+                    profile=profile,
+                    attempt=attempt,
+                    status="failed",
+                    duration_ms=elapsed_ms,
+                    usage=getattr(self.agents, "last_usage", {}),
+                    error=str(exc),
+                )
                 self.telemetry.record(
                     project_id,
                     provider=profile.kind,
@@ -470,8 +562,19 @@ class WorkflowService:
             result = json.loads(raw_path.read_text(encoding="utf-8"))
             request = self.store.read_artifact(project_id, "00-request.md")
             route = self.sources.route(project.configuration, request)
+            question_repairs = (
+                self._supplement_question_coverage(project_id, result)
+                if stage == "questions"
+                else []
+            )
             ref_repairs = self.contract.normalize_known_project_refs(result, project)
             missing_ref_repairs = self.contract.normalize_missing_local_refs(result)
+            unavailable_source_repairs = (
+                self.contract.normalize_unavailable_inferred_sources(result)
+            )
+            official_url_repairs = self.contract.normalize_required_official_url(
+                result, route
+            )
             flow_repairs = (
                 self.graph.normalize_document_flow(result)
                 if stage != "questions"
@@ -482,6 +585,12 @@ class WorkflowService:
                 self.modeler.normalize_ui_paths(project, result)
                 if stage == "instruction"
                 else []
+            )
+            vanessa_path_repairs = self.contract.normalize_vanessa_ui_paths(
+                result, modeler_path_repairs
+            )
+            verification_status_repairs = (
+                self.contract.normalize_known_verification_statuses(result)
             )
             self.contract.validate(result, stage, project, route)
             flow_errors = self.graph.document_flow_errors(result) if stage != "questions" else []
@@ -537,6 +646,39 @@ class WorkflowService:
                 )
             else:
                 artifact_path = self._save_generation(project, stage, result)
+            trace_stem = raw_path.stem.replace("-raw-", "-")
+            prompt_path, execution_path = self._trace_paths(project_id, trace_stem)
+            saved_execution = self._read_execution_trace(execution_path)
+            execution = saved_execution or {
+                "role": ROLE_BY_STAGE[stage],
+                "model": "не записано в старом вызове",
+                "attempt": None,
+                "status": "recovered_without_api",
+                "input_tokens": None,
+                "cached_input_tokens": None,
+                "output_tokens": None,
+                "reasoning_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "error": "",
+            }
+            if saved_execution:
+                execution["original_status"] = saved_execution.get("status", "")
+                execution["status"] = "recovered_without_api"
+                execution["error"] = ""
+                atomic_write_json(execution_path, execution)
+            self._attach_execution_trace(
+                artifact_path,
+                prompt_path if prompt_path.is_file() else None,
+                execution,
+            )
+            if stage == "instruction":
+                atomic_write_text(
+                    self.store.project_dir(project_id)
+                    / "answers_md"
+                    / f"instruction-v{project.instruction_version:03d}-draft.md",
+                    artifact_path.read_text(encoding="utf-8"),
+                )
             self.store.write_artifact(project_id, "evidence.ndjson", evidence_ndjson(result))
             project.last_error = ""
             self.store.save(project)
@@ -548,9 +690,14 @@ class WorkflowService:
                     "artifact": artifact_path.name,
                     "known_ref_repairs": ref_repairs,
                     "missing_local_ref_repairs": missing_ref_repairs,
+                    "unavailable_source_repairs": unavailable_source_repairs,
+                    "official_url_repairs": official_url_repairs,
                     "document_flow_repairs": flow_repairs,
                     "evidence_ref_repairs": evidence_repairs,
                     "modeler_path_repairs": modeler_path_repairs,
+                    "vanessa_path_repairs": vanessa_path_repairs,
+                    "verification_status_repairs": verification_status_repairs,
+                    "question_coverage_supplements": question_repairs,
                     "api_calls": 0,
                 },
             )
@@ -585,11 +732,12 @@ class WorkflowService:
         self, project: Project, stage: str, result: dict[str, Any]
     ) -> Path:
         if stage == "questions":
-            text = self.renderer.requirements(project, result)
-            path = self.store.write_artifact(project.project_id, "01-requirements.md", text)
-            self.analytics.synchronize_presented_questions(
+            synchronized = self.analytics.synchronize_presented_questions(
                 project.project_id, result.get("questions", [])
             )
+            text = self.renderer.requirements(project, result)
+            text = text.rstrip() + self._question_coverage_section(synchronized) + "\n"
+            path = self.store.write_artifact(project.project_id, "01-requirements.md", text)
             atomic_write_json(
                 self.store.project_dir(project.project_id) / "questions.json",
                 result.get("questions", []),
@@ -643,6 +791,62 @@ class WorkflowService:
             raise NotFoundError("Пакет вопросов ещё не сформирован.")
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def refresh_question_audit(self, project_id: str) -> Path:
+        """Add the local coverage/usage audit to a legacy question artifact."""
+        with self.store.lock(project_id):
+            artifact_path = self.store.project_dir(project_id) / "01-requirements.md"
+            if not artifact_path.is_file():
+                raise NotFoundError("Артефакт требований ещё не сформирован.")
+            bundle = self.analytics.load(project_id)
+            text = artifact_path.read_text(encoding="utf-8")
+            text = text.split("\n## Аудит полноты вопросов\n", 1)[0]
+            text = text.split("\n## Выполнение AI\n", 1)[0]
+            atomic_write_text(
+                artifact_path,
+                text.rstrip() + self._question_coverage_section(bundle) + "\n",
+            )
+            calls = [
+                item
+                for item in self.telemetry.records(project_id)
+                if item.get("skill") == "erp-translator"
+            ]
+            latest = calls[-1] if calls else {}
+            input_tokens = latest.get("input_tokens") if latest else None
+            output_tokens = latest.get("output_tokens") if latest else None
+            execution = {
+                "role": "erp-translator",
+                "model": latest.get("model", "не записано в старом вызове"),
+                "status": latest.get("result", "legacy_call"),
+                "input_tokens": input_tokens,
+                "cached_input_tokens": latest.get("cached_input_tokens") if latest else None,
+                "output_tokens": output_tokens,
+                "reasoning_tokens": latest.get("reasoning_tokens") if latest else None,
+                "total_tokens": (
+                    int(input_tokens or 0) + int(output_tokens or 0)
+                    if input_tokens is not None and output_tokens is not None
+                    else None
+                ),
+                "duration_ms": latest.get("duration_ms") if latest else None,
+            }
+            prompt_candidates = sorted(
+                (self.store.project_dir(project_id) / "agent_artifacts").glob(
+                    "questions-r*-a*-prompt.txt"
+                ),
+                key=lambda item: item.stat().st_mtime_ns,
+                reverse=True,
+            )
+            self._attach_execution_trace(
+                artifact_path,
+                prompt_candidates[0] if prompt_candidates else None,
+                execution,
+            )
+            self.store.append_event(
+                project_id,
+                "question_audit_refreshed",
+                {"api_calls": 0, "prompt_available": bool(prompt_candidates)},
+            )
+            return artifact_path
+
     def ask_project(
         self, project_id: str, question: str, kind: str = "process"
     ) -> dict[str, Any]:
@@ -693,13 +897,66 @@ class WorkflowService:
             )
             profile = self.agents.role_profile(role)
             started = time.perf_counter()
+            prompt_path, execution_path = self._trace_paths(project_id, f"query-{query_id}")
+            atomic_write_text(prompt_path, prompt)
             raw_query_path = answers_dir / f"query-{query_id}-raw.json"
             recovered_raw = raw_query_path.is_file()
             if recovered_raw:
                 result = json.loads(raw_query_path.read_text(encoding="utf-8"))
+                execution = self._read_execution_trace(execution_path) or {
+                    "role": role,
+                    "model": profile.model,
+                    "attempt": None,
+                    "status": "recovered_without_api",
+                    "input_tokens": None,
+                    "cached_input_tokens": None,
+                    "output_tokens": None,
+                    "reasoning_tokens": None,
+                    "total_tokens": None,
+                    "duration_ms": None,
+                    "error": "",
+                }
             else:
-                result = self.agents.generate_role(role, prompt, self.contract.schema())
+                try:
+                    result = self.agents.generate_role(role, prompt, self.contract.schema())
+                except Exception as exc:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    self._write_execution_trace(
+                        execution_path,
+                        prompt_path=prompt_path,
+                        role=role,
+                        profile=profile,
+                        attempt=1,
+                        status="failed",
+                        duration_ms=elapsed_ms,
+                        usage=getattr(self.agents, "last_usage", {}),
+                        error=str(exc),
+                    )
+                    self.telemetry.record(
+                        project_id,
+                        provider=profile.kind,
+                        model=profile.model,
+                        reasoning_effort=profile.reasoning_effort,
+                        skill=f"project-query:{role}",
+                        attempt=1,
+                        result="failed",
+                        error=str(exc),
+                        duration_ms=elapsed_ms,
+                        wall_time_ms=elapsed_ms,
+                        **getattr(self.agents, "last_usage", {}),
+                    )
+                    raise
                 atomic_write_json(raw_query_path, result)
+                execution = self._write_execution_trace(
+                    execution_path,
+                    prompt_path=prompt_path,
+                    role=role,
+                    profile=profile,
+                    attempt=1,
+                    status="api_response_received",
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    usage=getattr(self.agents, "last_usage", {}),
+                )
             ref_repairs = self.contract.normalize_known_project_refs(result, temporary)
             if ref_repairs:
                 self.store.append_event(
@@ -713,6 +970,28 @@ class WorkflowService:
                     project_id,
                     "missing_local_refs_normalized",
                     {"stage": "project-query", "repairs": missing_ref_repairs},
+                )
+            unavailable_source_repairs = (
+                self.contract.normalize_unavailable_inferred_sources(result)
+            )
+            if unavailable_source_repairs:
+                self.store.append_event(
+                    project_id,
+                    "unavailable_inferred_sources_removed",
+                    {"stage": "project-query", "repairs": unavailable_source_repairs},
+                )
+            official_url_repairs = self.contract.normalize_required_official_url(
+                result, route
+            )
+            if official_url_repairs:
+                self.store.append_event(
+                    project_id,
+                    "official_url_restored_from_routed_knowledge",
+                    {
+                        "stage": "project-query",
+                        "repairs": official_url_repairs,
+                        "network_calls": 0,
+                    },
                 )
             flow_repairs = self.graph.normalize_document_flow(result)
             if flow_repairs:
@@ -746,6 +1025,15 @@ class WorkflowService:
                     "ui_paths_expanded_from_modeler",
                     {"stage": "project-query", "repairs": modeler_path_repairs},
                 )
+            vanessa_path_repairs = self.contract.normalize_vanessa_ui_paths(
+                result, modeler_path_repairs
+            )
+            if vanessa_path_repairs:
+                self.store.append_event(
+                    project_id,
+                    "vanessa_ui_paths_expanded_from_modeler",
+                    {"stage": "project-query", "repairs": vanessa_path_repairs},
+                )
             metadata_status_repairs = self.contract.normalize_incompatible_metadata_steps(
                 result,
                 temporary,
@@ -757,6 +1045,15 @@ class WorkflowService:
                     project_id,
                     "project_query_metadata_status_normalized",
                     {"stage": "project-query", "repairs": metadata_status_repairs},
+                )
+            verification_status_repairs = (
+                self.contract.normalize_known_verification_statuses(result)
+            )
+            if verification_status_repairs:
+                self.store.append_event(
+                    project_id,
+                    "known_verification_statuses_normalized",
+                    {"stage": "project-query", "repairs": verification_status_repairs},
                 )
             self.contract.validate(
                 result,
@@ -785,7 +1082,25 @@ class WorkflowService:
                 },
                 body,
             )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if not recovered_raw:
+                execution = self._write_execution_trace(
+                    execution_path,
+                    prompt_path=prompt_path,
+                    role=role,
+                    profile=profile,
+                    attempt=1,
+                    status="completed",
+                    duration_ms=elapsed_ms,
+                    usage=getattr(self.agents, "last_usage", {}),
+                )
+            else:
+                execution["original_status"] = execution.get("status", "")
+                execution["status"] = "recovered_without_api"
+                execution["error"] = ""
+                atomic_write_json(execution_path, execution)
             atomic_write_text(answer_path, markdown)
+            self._attach_execution_trace(answer_path, prompt_path, execution)
             atomic_write_json(answers_dir / f"query-{query_id}.json", result)
             index_path = answers_dir / "index.ndjson"
             index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -805,7 +1120,6 @@ class WorkflowService:
                     )
                     + "\n"
                 )
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
             if not recovered_raw:
                 self.telemetry.record(
                     project_id,
@@ -836,6 +1150,153 @@ class WorkflowService:
                 "reused": recovered_raw,
                 "model": profile.model,
             }
+
+    def _trace_paths(self, project_id: str, stem: str) -> tuple[Path, Path]:
+        directory = self.store.project_dir(project_id) / "agent_artifacts"
+        return directory / f"{stem}-prompt.txt", directory / f"{stem}-execution.json"
+
+    @staticmethod
+    def _write_execution_trace(
+        path: Path,
+        *,
+        prompt_path: Path,
+        role: str,
+        profile: Any,
+        attempt: int,
+        status: str,
+        duration_ms: int,
+        usage: dict[str, Any],
+        error: str = "",
+    ) -> dict[str, Any]:
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        model = (
+            getattr(profile, "model", "")
+            or getattr(profile, "command", "")
+            or getattr(profile, "name", "")
+        )
+        payload = {
+            "role": role,
+            "model": model,
+            "provider": getattr(profile, "kind", ""),
+            "reasoning_effort": getattr(profile, "reasoning_effort", ""),
+            "attempt": attempt,
+            "status": status,
+            "prompt_path": str(prompt_path),
+            "input_tokens": input_tokens,
+            "cached_input_tokens": int(usage.get("cached_input_tokens", 0) or 0),
+            "output_tokens": output_tokens,
+            "reasoning_tokens": int(usage.get("reasoning_tokens", 0) or 0),
+            "total_tokens": input_tokens + output_tokens,
+            "duration_ms": int(duration_ms),
+            "error": error,
+        }
+        atomic_write_json(path, payload)
+        return payload
+
+    @staticmethod
+    def _read_execution_trace(path: Path) -> dict[str, Any] | None:
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    @staticmethod
+    def _attach_execution_trace(
+        artifact_path: Path,
+        prompt_path: Path | None,
+        execution: dict[str, Any],
+    ) -> None:
+        marker = "\n## Выполнение AI\n"
+        text = artifact_path.read_text(encoding="utf-8")
+        text = text.split(marker, 1)[0].rstrip()
+        prompt_link = "не был сохранён в старом вызове"
+        if prompt_path is not None and prompt_path.is_file():
+            relative = os.path.relpath(prompt_path, artifact_path.parent).replace("\\", "/")
+            prompt_link = f"[полный точный prompt]({relative})"
+
+        def shown(value: Any) -> str:
+            return "не записано" if value is None else str(value)
+
+        section = [
+            "",
+            "## Выполнение AI",
+            "",
+            f"- Prompt: {prompt_link}.",
+            f"- Роль / модель: `{execution.get('role', '')}` / `{execution.get('model', '')}`.",
+            f"- Входные токены: **{shown(execution.get('input_tokens'))}**; "
+            f"из них cached: **{shown(execution.get('cached_input_tokens'))}**.",
+            f"- Выходные токены: **{shown(execution.get('output_tokens'))}**; "
+            f"reasoning: **{shown(execution.get('reasoning_tokens'))}**.",
+            f"- Всего токенов (input + output): **{shown(execution.get('total_tokens'))}**.",
+            f"- Длительность: **{shown(execution.get('duration_ms'))} мс**; "
+            f"статус: `{execution.get('status', '')}`.",
+        ]
+        atomic_write_text(artifact_path, text + "\n" + "\n".join(section) + "\n")
+
+    def _question_coverage_section(self, bundle: Any) -> str:
+        clusters = sorted({item.cluster for item in bundle.requirements})
+        questioned = sorted({item.cluster for item in bundle.questions})
+        heuristic = self.analytics.build_questions(bundle.requirements)
+        heuristic_clusters = sorted({item.cluster for item in heuristic})
+        missing = sorted(set(heuristic_clusters) - set(questioned))
+        status = (
+            "требуется ручная проверка сигналов: " + ", ".join(missing)
+            if missing
+            else "локальные эвристические сигналы покрыты"
+        )
+        return (
+            "\n\n## Аудит полноты вопросов\n\n"
+            f"- Атомарных требований в ТЗ: **{len(bundle.requirements)}**.\n"
+            f"- Смысловых кластеров в ТЗ передано translator: **{len(clusters)}** "
+            f"({', '.join(clusters) or 'нет'}).\n"
+            f"- Сформировано вопросов: **{len(bundle.questions)}** (это не фиксированный лимит; "
+            "допустимо от 1 до 12 по числу материальных неопределённостей).\n"
+            f"- Кластеры с вопросами: {', '.join(questioned) or 'не определены'}.\n"
+            f"- Независимый локальный контроль: **{status}**.\n"
+            "\nКоличество вопросов само по себе не доказывает полноту: перед утверждением "
+            "нужно проверить перечисленные кластеры и влияние каждого вопроса на REQ-id."
+        )
+
+    def _supplement_question_coverage(
+        self, project_id: str, result: dict[str, Any]
+    ) -> list[str]:
+        """Add free deterministic questions for uncertainty clusters omitted by AI."""
+        bundle = self.analytics.ensure(project_id)
+        questions = result.setdefault("questions", [])
+        represented_requirement_ids = {
+            requirement_id
+            for question in questions
+            for requirement_id in re.findall(
+                r"REQ-[0-9a-f]+", str(question.get("impact") or ""), re.IGNORECASE
+            )
+        }
+        additions = []
+        for candidate in self.analytics.build_questions(bundle.requirements):
+            if represented_requirement_ids.intersection(candidate.requirement_ids):
+                continue
+            if len(questions) >= 12:
+                raise GenerationValidationError(
+                    "Translator сформировал 12 вопросов, но не покрыл локальный сигнал "
+                    f"кластера {candidate.cluster}. Нужен новый пакет с точными REQ-id в impact."
+                )
+            questions.append(
+                {
+                    "id": candidate.id,
+                    "text": candidate.text,
+                    "required": candidate.required,
+                    "impact": (
+                        "Локальный Python-аудит выявил неопределённость; затронуты требования: "
+                        + ", ".join(candidate.requirement_ids)
+                    ),
+                    "options": candidate.options,
+                }
+            )
+            represented_requirement_ids.update(candidate.requirement_ids)
+            additions.append(candidate.id)
+        return additions
 
     def preflight(self, project_id: str, focus: str = "") -> dict[str, Any]:
         """Run all free/local preparation before any paid API role."""

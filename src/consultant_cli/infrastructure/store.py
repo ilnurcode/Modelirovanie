@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import sys
 import tempfile
 import time
 import uuid
@@ -26,6 +28,92 @@ TRANSLIT = str.maketrans(
         "э": "e", "ю": "yu", "я": "ya",
     }
 )
+
+
+def _process_start_token(pid: int) -> str | None:
+    """Return an OS process creation token, or None when the process is absent."""
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            # Access denied means the process exists but cannot be inspected.
+            return "alive-access-denied" if ctypes.get_last_error() == 5 else None
+        try:
+            creation = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return "alive-unknown-start"
+            return f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}"
+        finally:
+            kernel32.CloseHandle(handle)
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.is_file():
+        try:
+            return proc_stat.read_text(encoding="ascii").split()[21]
+        except (OSError, IndexError):
+            return "alive-unknown-start"
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return None
+    return "alive-unknown-start"
+
+
+def _read_lock_owner(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        legacy = re.fullmatch(r"pid=(\d+)", raw)
+        return {"pid": int(legacy.group(1)), "legacy": True} if legacy else {}
+
+
+def _lock_owner_is_alive(owner: dict[str, Any]) -> bool:
+    try:
+        pid = int(owner.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    current_token = _process_start_token(pid)
+    if current_token is None:
+        return False
+    saved_token = str(owner.get("process_start_token") or "")
+    if saved_token and current_token not in {
+        saved_token,
+        "alive-access-denied",
+        "alive-unknown-start",
+    }:
+        # The PID was reused by a different process after a crash/reboot.
+        return False
+    return True
 
 
 def slugify(value: str) -> str:
@@ -187,10 +275,17 @@ class ProjectStore:
         """Remove a project from active lists by moving it to recoverable trash."""
         project = self.load(project_id)
         directory = self.project_dir(project_id)
-        if (directory / ".project.lock").exists():
+        lock_path = directory / ".project.lock"
+        owner = _read_lock_owner(lock_path) if lock_path.exists() else {}
+        if lock_path.exists() and _lock_owner_is_alive(owner):
             raise WorkflowBlockedError(
-                f"Проект {project_id} сейчас изменяется другим процессом."
+                self._active_lock_message(project_id, owner)
             )
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
         self.append_event(
             project_id,
             "project_moved_to_trash",
@@ -258,18 +353,71 @@ class ProjectStore:
     @contextmanager
     def lock(self, project_id: str) -> Iterator[None]:
         path = self.project_dir(project_id) / ".project.lock"
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
+        descriptor: int | None = None
+        for _attempt in range(2):
+            try:
+                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError as exc:
+                owner = _read_lock_owner(path)
+                if owner and _lock_owner_is_alive(owner):
+                    raise WorkflowBlockedError(
+                        self._active_lock_message(project_id, owner)
+                    ) from exc
+                # Do not remove a just-created file before its owner writes JSON.
+                try:
+                    fresh_unknown = not owner and (
+                        datetime.now().timestamp() - path.stat().st_mtime < 5
+                    )
+                except FileNotFoundError:
+                    fresh_unknown = False
+                if fresh_unknown:
+                    raise WorkflowBlockedError(
+                        f"Проект {project_id} только что начал изменяться другим процессом."
+                    ) from exc
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+        if descriptor is None:
             raise WorkflowBlockedError(
-                f"Проект {project_id} уже изменяется другим процессом."
-            ) from exc
+                f"Не удалось получить блокировку проекта {project_id}."
+            )
+        nonce = uuid.uuid4().hex
+        owner = {
+            "schema_version": 2,
+            "pid": os.getpid(),
+            "process_start_token": _process_start_token(os.getpid()),
+            "created_at": now_iso(),
+            "host": socket.gethostname(),
+            "command": Path(sys.argv[0]).name,
+            "nonce": nonce,
+        }
         try:
-            os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+            os.write(
+                descriptor,
+                (json.dumps(owner, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+                    "utf-8"
+                ),
+            )
             os.close(descriptor)
+            descriptor = None
             yield
         finally:
+            if descriptor is not None:
+                os.close(descriptor)
             try:
-                path.unlink()
+                current = _read_lock_owner(path)
+                if current.get("nonce") == nonce:
+                    path.unlink()
             except FileNotFoundError:
                 pass
+
+    @staticmethod
+    def _active_lock_message(project_id: str, owner: dict[str, Any]) -> str:
+        details = [f"PID {owner.get('pid', '?')}"]
+        if owner.get("command"):
+            details.append(str(owner["command"]))
+        if owner.get("created_at"):
+            details.append(f"с {owner['created_at']}")
+        return f"Проект {project_id} уже изменяется процессом " + ", ".join(details) + "."

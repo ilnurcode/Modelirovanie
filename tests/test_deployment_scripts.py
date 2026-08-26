@@ -33,6 +33,8 @@ class DeploymentScriptsTest(unittest.TestCase):
             root.mkdir()
             stage.mkdir()
             (root / "README.md").write_text("readme", encoding="utf-8")
+            (root / ".codegraph").mkdir()
+            (root / ".codegraph" / "codegraph.db").write_text("index", encoding="utf-8")
             graphs = root / "1c_modeler_upgrade" / "graphs"
             graphs.mkdir(parents=True)
             (graphs / "large.json").write_text("graph", encoding="utf-8")
@@ -52,6 +54,7 @@ class DeploymentScriptsTest(unittest.TestCase):
             build_application.verify_archive(archive, "consultant")
             with zipfile.ZipFile(archive) as package:
                 self.assertNotIn("1c_modeler_upgrade/graphs/large.json", package.namelist())
+                self.assertNotIn(".codegraph/codegraph.db", package.namelist())
                 self.assertNotIn(
                     "1c_modeler_upgrade/1c_erp_2_5_source_graph.json",
                     package.namelist(),

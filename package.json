@@ -1,0 +1,21 @@
+{
+  "name": "newagent-1c-mcp",
+  "version": "4.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Legacy MCP compatibility tests; NewAgent 4.1 main runtime is Python-first",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "mcp": "node mcp/erp-graph-server.mjs",
+    "mcp:doctor": "node mcp/doctor.mjs",
+    "mcp:smoke": "node scripts/mcp_smoke.mjs",
+    "test:mcp": "node --test tests/mcp/*.test.mjs",
+    "test:python": "set PYTHONPATH=src&& py -3 -m unittest discover -s tests -p test_*.py -v"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
+  }
+}

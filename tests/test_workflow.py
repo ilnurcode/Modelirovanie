@@ -219,6 +219,42 @@ class WorkflowTest(unittest.TestCase):
 
             self.assertEqual(ProjectStatus.REQUIREMENTS_PENDING, generated.status)
 
+    def test_question_result_contains_coverage_prompt_and_token_usage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            _, store, workflow = self.build(Path(temp), [result("questions")])
+            workflow.agents.last_usage = {
+                "input_tokens": 120,
+                "cached_input_tokens": 20,
+                "output_tokens": 30,
+                "reasoning_tokens": 4,
+            }
+            project = workflow.create_project(
+                title="Прозрачный вызов",
+                prompt="Уточнить вариант закупки или производства",
+                mode="full",
+                product="1С:ERP Управление предприятием 2",
+                release="2.5.27.49",
+            )
+
+            generated, artifact = workflow.run(project.project_id)
+
+            self.assertEqual("hybrid", generated.generation.deliverable)
+            markdown = artifact.read_text(encoding="utf-8")
+            self.assertIn("## Аудит полноты вопросов", markdown)
+            self.assertIn("это не фиксированный лимит", markdown)
+            self.assertIn("## Выполнение AI", markdown)
+            self.assertIn("Всего токенов (input + output): **150**", markdown)
+            artifacts = store.project_dir(project.project_id) / "agent_artifacts"
+            prompt_path = artifacts / "questions-r001-a001-prompt.txt"
+            execution_path = artifacts / "questions-r001-a001-execution.json"
+            self.assertIn(
+                "Уточнить вариант закупки или производства",
+                prompt_path.read_text(encoding="utf-8"),
+            )
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            self.assertEqual(150, execution["total_tokens"])
+            self.assertEqual("completed", execution["status"])
+
     def test_presented_questions_and_freeform_answers_are_used_for_approval(self):
         with tempfile.TemporaryDirectory() as temp:
             _, _, workflow = self.build(Path(temp), [result("questions")])
@@ -230,12 +266,14 @@ class WorkflowTest(unittest.TestCase):
                 release="2.5.27.49",
             )
             workflow.run(project.project_id)
-            self.assertEqual(
-                ["Q1"],
-                [item.id for item in workflow.analytics.load(project.project_id).questions],
-            )
+            presented = workflow.analytics.load(project.project_id).questions
+            self.assertEqual("Q1", presented[0].id)
+            self.assertEqual(2, len(presented))
 
-            workflow.save_answers(project.project_id, {"Q1": "Собственный точный вариант"})
+            workflow.save_answers(
+                project.project_id,
+                {item.id: "Собственный точный вариант" for item in presented},
+            )
             approved = workflow.approve(
                 project.project_id,
                 "requirements",

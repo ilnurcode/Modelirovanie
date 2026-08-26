@@ -15,8 +15,8 @@ expansion, source_ref, document-flow contract, безопасное обнару
 Wormsoft-ключа, Pi/Herdr UX и role policy. Опубликованный 487-МиБ SQLite sidecar,
 ERP XML и ИТС не копируются: Python читает их read-only из RAGAgent.
 
-Legacy Node MCP не включён в portable-репозиторий и не входит в request path.
-Готовые ответы исходных проектов не переносились и не используются как эталон результата.
+Legacy Node MCP сохранён только для истории/сравнительных тестов и не входит в
+request path. Готовые ответы исходных проектов не используются как эталон результата.
 
 ## Новые модули NewAgent 4.1
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 EXCLUDED = {
-    ".cache", ".git", ".tmp", ".venv", "application-packages", "build",
+    ".cache", ".codegraph", ".git", ".tmp", ".venv", "application-packages", "build",
     "consultant.exe", "deployment", "dist", "node_modules", "release", "results",
     "tests",
 }

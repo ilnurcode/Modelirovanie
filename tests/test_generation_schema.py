@@ -9,7 +9,7 @@ from consultant_cli.domain.models import ConfigurationInfo, Project, ProjectMode
 from consultant_cli.infrastructure.store import RepositoryPaths
 from consultant_cli.services.generation import ArtifactRenderer, GenerationContract
 from consultant_cli.services.generation import PromptBuilder
-from consultant_cli.services.sources import SourceRoute
+from consultant_cli.services.sources import SourceCandidate, SourceRoute
 from tests.helpers import result
 
 
@@ -57,6 +57,141 @@ class GenerationSchemaTest(unittest.TestCase):
             self.assertEqual("", source["local_ref"])
             self.assertEqual(source["url"], source["source_ref"])
             self.assertEqual(1, len(repairs))
+
+    def test_missing_official_url_is_restored_from_routed_local_article(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            article = root / "knowledge" / "articles" / "test.md"
+            article.parent.mkdir(parents=True)
+            article.write_text(
+                "---\nid: s1\ntitle: Официальная статья\nproduct: 1C:ERP\n"
+                "version: '2.5'\nverification_status: verified\n"
+                "source_url: https://its.1c.ru/db/erp25doc/bookmark/Test\n---\n\n# Тест\n",
+                encoding="utf-8",
+            )
+            data = result("design")
+            data["sources"][0]["url"] = ""
+            route = SourceRoute(
+                requested_product="1С:ERP Управление предприятием 2",
+                requested_release="2.5.27.49",
+                compatibility="product_only",
+                use_xml=False,
+                external_docs_required=True,
+                web_search_required=True,
+                candidates=[
+                    SourceCandidate(
+                        ref="knowledge/articles/test.md",
+                        title="Официальная статья",
+                        score=10,
+                        excerpt="",
+                    )
+                ],
+            )
+            contract = GenerationContract(RepositoryPaths(root))
+
+            repairs = contract.normalize_required_official_url(data, route)
+            contract.validate(
+                data,
+                "design",
+                Project(
+                    "test",
+                    "Test",
+                    ProjectMode.FULL,
+                    configuration=ConfigurationInfo(
+                        "1С:ERP Управление предприятием 2", "2.5", "2.5.27.49"
+                    ),
+                ),
+                route,
+            )
+
+            self.assertEqual(
+                "https://its.1c.ru/db/erp25doc/bookmark/Test",
+                data["sources"][0]["url"],
+            )
+            self.assertEqual(1, len(repairs))
+
+    def test_local_path_in_url_is_cleared_and_verified_its_is_canonicalized(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            article = root / "knowledge" / "articles" / "test.md"
+            article.parent.mkdir(parents=True)
+            article.write_text("# Test\n", encoding="utf-8")
+            data = result("design")
+            source = data["sources"][0]
+            source["url"] = source["local_ref"]
+            source["source_ref"] = source["url"]
+            source["url"] = "https://its.1c.ru/db/erp25doc/bookmark/Test"
+            data["steps"][0]["verification_status"] = "verified_its"
+            contract = GenerationContract(RepositoryPaths(root))
+
+            status_repairs = contract.normalize_known_verification_statuses(data)
+            self.assertEqual("verified", data["steps"][0]["verification_status"])
+            self.assertEqual(1, len(status_repairs))
+
+            source["url"] = source["local_ref"]
+            url_repairs = contract.normalize_missing_local_refs(data)
+            self.assertEqual("", source["url"])
+            self.assertEqual(1, len(url_repairs))
+
+    def test_verified_its_without_official_source_is_downgraded(self):
+        data = result("design")
+        data["steps"][0]["verification_status"] = "verified_its"
+
+        repairs = GenerationContract.normalize_known_verification_statuses(data)
+
+        self.assertEqual("inferred", data["steps"][0]["verification_status"])
+        self.assertEqual(1, len(repairs))
+
+    def test_unavailable_inferred_source_is_removed_from_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = result("design")
+            data["sources"].append(
+                {
+                    "id": "missing-candidate",
+                    "title": "Старый IFACE",
+                    "local_ref": "IFACE/missing.md",
+                    "url": "IFACE/missing.md",
+                    "product": "1С:ERP",
+                    "release": "",
+                    "verification_status": "inferred",
+                    "notes": "",
+                    "source_ref": "C:/Users/Other/missing.md",
+                    "node_id": "",
+                    "edge_ids": [],
+                }
+            )
+            data["steps"][0]["evidence_refs"].append("missing-candidate")
+            contract = GenerationContract(RepositoryPaths(Path(temp)))
+
+            repairs = contract.normalize_unavailable_inferred_sources(data)
+
+            self.assertNotIn(
+                "missing-candidate", {item["id"] for item in data["sources"]}
+            )
+            self.assertNotIn("missing-candidate", data["steps"][0]["evidence_refs"])
+            self.assertEqual(1, len(repairs))
+
+    def test_vanessa_feature_reuses_full_modeler_paths(self):
+        data = result("design")
+        data["vanessa_feature"] = (
+            "Когда я открываю список «Продажи → НСИ продаж → Клиенты»"
+        )
+
+        repairs = GenerationContract.normalize_vanessa_ui_paths(
+            data,
+            [
+                {
+                    "from": "Продажи → НСИ продаж → Клиенты",
+                    "to": "Продажи → Настройки и справочники → Клиенты",
+                }
+            ],
+        )
+
+        self.assertIn(
+            "Продажи → Настройки и справочники → Клиенты",
+            data["vanessa_feature"],
+        )
+        self.assertEqual(1, len(repairs))
 
     def test_project_query_allows_empty_document_flow_and_exact_modeler_metadata(self):
         with tempfile.TemporaryDirectory() as temp:

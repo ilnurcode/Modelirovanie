@@ -75,9 +75,9 @@ def parser() -> argparse.ArgumentParser:
     new.add_argument("--detail", choices=["concise", "balanced", "detailed"], default="balanced")
     new.add_argument(
         "--deliverable",
-        choices=["process", "consultant", "vanessa"],
-        default="consultant",
-        help="Формат результата: процесс, инструкция консультанта или сценарий Vanessa",
+        choices=["hybrid", "process", "consultant", "vanessa"],
+        default="hybrid",
+        help="Формат результата; по умолчанию единый процесс и инструкция консультанта",
     )
 
     commands.add_parser("list", help="Список проектов")
@@ -119,7 +119,9 @@ def parser() -> argparse.ArgumentParser:
     configure.add_argument("--edition")
     configure.add_argument("--release")
     configure.add_argument("--detail", choices=["concise", "balanced", "detailed"])
-    configure.add_argument("--deliverable", choices=["process", "consultant", "vanessa"])
+    configure.add_argument(
+        "--deliverable", choices=["hybrid", "process", "consultant", "vanessa"]
+    )
     configure.add_argument(
         "--internet-policy",
         choices=["forbidden", "official_only", "official_and_allowed_web"],

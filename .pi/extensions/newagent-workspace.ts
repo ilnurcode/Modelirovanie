@@ -52,11 +52,16 @@ function statusText(project: JsonObject): string {
 
 export default function (pi: ExtensionAPI) {
   async function call(cwd: string, args: string[], timeout = 1_200_000): Promise<any> {
-    const script = path.join(cwd, "consultant.ps1");
+    const repo = process.env.CONSULTANT_REPO || cwd;
+    const executable = process.env.CONSULTANT_EXECUTABLE;
+    const command = executable || "powershell.exe";
+    const commandArgs = executable
+      ? ["--repo", repo, "--json", ...args]
+      : ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "consultant.ps1"), "--repo", repo, "--json", ...args];
     const result = await pi.exec(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "--repo", cwd, "--json", ...args],
-      { cwd, timeout }
+      command,
+      commandArgs,
+      { cwd: repo, timeout }
     );
     if (result.code !== 0) {
       const raw = result.stdout.trim() || result.stderr.trim();
@@ -95,13 +100,9 @@ export default function (pi: ExtensionAPI) {
       }
       const release = await ctx.ui.input("Точный релиз ERP", "Например: 2.5.27.49");
       if (!release?.trim()) return undefined;
-      const deliverable = await ctx.ui.select("Формат итогового ответа", [
-        "consultant — куда нажимать", "process — сквозной процесс", "vanessa — сценарий Vanessa"
-      ]);
-      if (!deliverable) return undefined;
       const created = await call(ctx.cwd, [
         "new", title.trim(), ...sourceArgs, "--product", "1С:ERP Управление предприятием 2",
-        "--release", release.trim(), "--deliverable", deliverable.split(" ", 1)[0]
+        "--release", release.trim(), "--deliverable", "hybrid"
       ]);
       return String(created.project_id);
     }

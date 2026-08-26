@@ -1,7 +1,6 @@
 # Возможности, сознательно не включённые в основной runtime
 
-- Node MCP и MCP-host orchestration: legacy-файлы не включены в portable-репозиторий
-  и основной runtime не запускает MCP.
+- Node MCP и MCP-host orchestration: файлы оставлены как legacy, но не запускаются.
 - Копия тяжёлого graph sidecar, первичного XML и ИТС: используются read-only из
   RAGAgent, чтобы не дублировать сотни мегабайт.
 - NetworkX/NumPy/SciPy/scikit-learn в request path: опубликованный SQLite уже содержит

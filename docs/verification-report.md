@@ -1,10 +1,5 @@
 # Отчёт проверки NewAgent 4.0
 
-> Исходный отчёт интеграционной ветки. Portable-версия 4.1.0 дополнительно проверена
-> 2026-08-25: 71 Python-тест, repository validation, Go installer tests, сборка
-> Windows `consultant.exe --version` и аудит application ZIP без `results`, кэшей,
-> legacy MCP, исходного и полного графов.
-
 Дата: 2026-08-19, timezone Asia/Tomsk.
 
 ## Автоматические проверки
@@ -18,10 +13,18 @@
 - Repo skills: 3/3 прошли `skill-creator/quick_validate.py`.
 - Все 16 обязательных аналитических инвариантов находятся в `tests/test_unified_analytics.py` и прошли.
 
-## Приватные регрессионные данные
+## Хлебозавод
 
-Пользовательское ТЗ и созданные из него проекты не входят в portable-репозиторий.
-Структурные инварианты проверяются синтетическими unit-тестами.
+Актуальный прогон: `results/bakery-regression-4`.
+
+- 120 атомарных требований, 8 кластеров, 2 бизнес-вопроса.
+- 62 дедуплицированных evidence candidates.
+- Вместо 120 механических шагов создано 8 операционных групп при сохранении traceability всех 120 требований.
+- Повторный поиск: 8 cache hits, 0 misses.
+- Неоднозначный ответ «подтверждаю настройки» по вариантам оплаты не записан как Decision.
+- 0 модельных вызовов, 0 input/cached/output/reasoning tokens, 0 model time; wall time regression 406 ms при тёплом кэше.
+- Все structural/invariant checks в regression report имеют значение `true`.
+- Offline Python Modeler вернул `needs_revision`: 23 critical GAP, потому что его portable graph содержит кандидаты. Это корректно блокирует `successful`; основной Codex runtime отдельно использует опубликованный граф Яны и точный route graph Ильнура.
 
 ## Целостность источников
 

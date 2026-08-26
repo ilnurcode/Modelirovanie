@@ -6,7 +6,7 @@ from typing import Any
 
 from consultant_cli.domain.models import Project, now_iso
 from consultant_cli.errors import GenerationValidationError
-from consultant_cli.infrastructure import yamlio
+from consultant_cli.infrastructure import frontmatter, yamlio
 from consultant_cli.infrastructure.store import RepositoryPaths
 from consultant_cli.services.sources import SourceRoute
 
@@ -45,13 +45,25 @@ class GenerationContract:
         return repairs
 
     def normalize_missing_local_refs(self, result: dict[str, Any]) -> list[dict[str, str]]:
-        """Drop invented local aliases when the same source has an official URL."""
+        """Normalize deterministic confusion between local_ref and url fields."""
         repairs: list[dict[str, str]] = []
         for source in result.get("sources", []) or []:
             if not isinstance(source, dict):
                 continue
             local_ref = str(source.get("local_ref") or "").strip()
             url = str(source.get("url") or "").strip()
+            if url and not url.startswith(("https://", "http://")):
+                local_url = url.replace("\\", "/").lstrip("./")
+                if (self.paths.root / local_url).is_file():
+                    source["url"] = ""
+                    if not local_ref:
+                        source["local_ref"] = local_url
+                    if str(source.get("source_ref") or "").strip() == url:
+                        source["source_ref"] = local_ref or local_url
+                    repairs.append(
+                        {"field": "url", "from": url, "to": "", "reason": "local_ref"}
+                    )
+                    url = ""
             if (
                 local_ref
                 and not (self.paths.root / local_ref).is_file()
@@ -63,6 +75,182 @@ class GenerationContract:
                 repairs.append(
                     {"field": "local_ref", "from": local_ref, "to": url}
                 )
+        return repairs
+
+    @staticmethod
+    def normalize_known_verification_statuses(
+        result: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        """Map the API's explicit ITS alias only when official evidence exists."""
+        sources = {
+            str(source.get("id") or ""): source
+            for source in result.get("sources", []) or []
+            if isinstance(source, dict)
+        }
+        repairs: list[dict[str, str]] = []
+        for step in result.get("steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            current = str(step.get("verification_status") or "")
+            if current != "verified_its":
+                continue
+            official_refs = [
+                str(reference)
+                for reference in step.get("evidence_refs", []) or []
+                if (
+                    (source := sources.get(str(reference), {})).get(
+                        "verification_status"
+                    )
+                    == "verified"
+                    and str(source.get("url") or "").startswith(
+                        ("https://", "http://")
+                    )
+                )
+            ]
+            canonical = "verified" if official_refs else "inferred"
+            step["verification_status"] = canonical
+            repairs.append(
+                {
+                    "step_id": str(step.get("id") or ""),
+                    "from": current,
+                    "to": canonical,
+                    "evidence_refs": ",".join(official_refs),
+                }
+            )
+        return repairs
+
+    def normalize_required_official_url(
+        self, result: dict[str, Any], route: SourceRoute
+    ) -> list[dict[str, str]]:
+        """Reuse an official URL already present in a routed local knowledge article.
+
+        The role sometimes omits the URL field in a revision even though Python
+        supplied the verified local article and its ``source_url`` in the prompt.
+        Re-reading that exact routed file is deterministic and avoids a second API
+        call; no URL is guessed and no network request is made here.
+        """
+        sources = result.get("sources")
+        if not route.web_search_required or not isinstance(sources, list):
+            return []
+        if any(
+            str(source.get("url") or "").startswith(("https://", "http://"))
+            for source in sources
+            if isinstance(source, dict)
+        ):
+            return []
+        by_id = {
+            str(source.get("id") or ""): source
+            for source in sources
+            if isinstance(source, dict)
+        }
+        for candidate in route.candidates:
+            local_ref = str(candidate.ref or "").replace("\\", "/").lstrip("./")
+            path = self.paths.root / local_ref
+            if not path.is_file() or path.suffix.casefold() != ".md":
+                continue
+            metadata, _body = frontmatter.parse(path.read_text(encoding="utf-8"))
+            url = str(metadata.get("source_url") or "").strip()
+            if not url.startswith(("https://", "http://")):
+                continue
+            source_id = str(metadata.get("id") or local_ref)
+            existing = by_id.get(source_id)
+            if existing is not None:
+                existing["url"] = url
+                if not str(existing.get("source_ref") or "").strip():
+                    existing["source_ref"] = url
+                return [{"field": "url", "source_id": source_id, "to": url}]
+            sources.append(
+                {
+                    "id": source_id,
+                    "title": str(metadata.get("title") or candidate.title or path.stem),
+                    "local_ref": local_ref,
+                    "url": url,
+                    "product": str(metadata.get("product") or route.requested_product),
+                    "release": str(metadata.get("version") or route.requested_release),
+                    "verification_status": "verified",
+                    "notes": "Официальный URL восстановлен из выбранной локальной статьи.",
+                    "source_ref": url,
+                    "node_id": "",
+                    "edge_ids": [],
+                }
+            )
+            return [{"field": "source", "source_id": source_id, "to": url}]
+        return []
+
+    def normalize_unavailable_inferred_sources(
+        self, result: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        """Remove inaccessible candidate sources without weakening verified evidence."""
+        sources = result.get("sources")
+        if not isinstance(sources, list):
+            return []
+        unavailable_ids: set[str] = set()
+        repairs: list[dict[str, str]] = []
+        retained = []
+        for source in sources:
+            if not isinstance(source, dict):
+                retained.append(source)
+                continue
+            source_id = str(source.get("id") or "")
+            local_ref = str(source.get("local_ref") or "").strip()
+            url = str(source.get("url") or "").strip()
+            unavailable = (
+                source.get("verification_status") == "inferred"
+                and bool(local_ref)
+                and not (self.paths.root / local_ref).is_file()
+                and not url.startswith(("https://", "http://"))
+            )
+            if unavailable:
+                unavailable_ids.add(source_id)
+                repairs.append(
+                    {
+                        "source_id": source_id,
+                        "from": local_ref,
+                        "to": "removed_unavailable_inferred_source",
+                    }
+                )
+            else:
+                retained.append(source)
+        if not unavailable_ids:
+            return []
+        result["sources"] = retained
+        for branch in result.get("document_flow", []) or []:
+            if not isinstance(branch, dict):
+                continue
+            for document in branch.get("documents", []) or []:
+                if isinstance(document, dict) and isinstance(
+                    document.get("evidence_refs"), list
+                ):
+                    document["evidence_refs"] = [
+                        ref
+                        for ref in document["evidence_refs"]
+                        if str(ref) not in unavailable_ids
+                    ]
+        for step in result.get("steps", []) or []:
+            if isinstance(step, dict) and isinstance(step.get("evidence_refs"), list):
+                step["evidence_refs"] = [
+                    ref for ref in step["evidence_refs"] if str(ref) not in unavailable_ids
+                ]
+        return repairs
+
+    @staticmethod
+    def normalize_vanessa_ui_paths(
+        result: dict[str, Any], path_repairs: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        """Apply the same exact Modeler route expansion to Gherkin text."""
+        feature = str(result.get("vanessa_feature") or "")
+        if not feature or not path_repairs:
+            return []
+        repairs: list[dict[str, str]] = []
+        for item in sorted(
+            path_repairs, key=lambda value: len(str(value.get("from") or "")), reverse=True
+        ):
+            old = str(item.get("from") or "")
+            new = str(item.get("to") or "")
+            if old and new and old in feature:
+                feature = feature.replace(old, new)
+                repairs.append({"from": old, "to": new})
+        result["vanessa_feature"] = feature
         return repairs
 
     def normalize_incompatible_metadata_steps(
@@ -349,6 +537,7 @@ class GenerationContract:
                         f"Шаг {step.get('id')} содержит некорректные semantic_relation_refs"
                     )
                 if expected_type == "instruction" and project.generation.deliverable in {
+                    "hybrid",
                     "consultant",
                     "vanessa",
                 }:
@@ -461,6 +650,13 @@ class PromptBuilder:
             ),
         }[stage]
         deliverable_rules = {
+            "hybrid": (
+                "Сформируйте единый результат: сначала полный сквозной процесс со всеми "
+                "основными, параллельными, альтернативными и возвратными ветвями, затем "
+                "подробную пошаговую инструкцию консультанта с предварительными настройками, "
+                "полными UI-путями, полями, командами и проверками. Ни одна из двух частей "
+                "не является сокращённым приложением к другой."
+            ),
             "process": (
                 "Опишите сквозной процесс, ветви, роли, документы и контроль. UI-пути "
                 "указывайте только когда они подтверждены."
@@ -535,6 +731,7 @@ artifact_type обязан быть: {stage}.
   подтверждённые evidence_refs;
 - source_ref и точные node/edge id из четырёхслойного графа сохранять в sources,
   evidence_refs и semantic_relation_refs, не заменять поисковым рангом;
+{('- перед формированием вопросов проверить все смысловые кластеры; не останавливаться на шаблонных пяти вопросах; вернуть от 1 до 12 вопросов ровно по числу материальных бизнес-неопределённостей; в impact каждого вопроса перечислить точные REQ-id, а в summary указать, какие кластеры проверены и почему дополнительных вопросов не требуется;' if stage == 'questions' else '')}
 
 Контракт внешней роли:
 {role_prompt[:9000]}

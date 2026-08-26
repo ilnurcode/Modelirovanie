@@ -10,6 +10,7 @@ node_modules/
 /application-packages/
 /release/
 /.cache/
+/.codegraph/
 /.tmp/
 /.venv/
 /consultant.local.toml
