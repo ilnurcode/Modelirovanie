@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.5.1"
+	installerVersion = "0.5.2"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -165,6 +165,8 @@ func run(args []string) error {
 		return rollbackGraphCommand(args[1:])
 	case "install-pi":
 		return installPiCommand(args[1:])
+	case "launch":
+		return launchCommand(args[1:])
 	case "uninstall":
 		return uninstallCommand(args[1:])
 	case "version", "--version", "-version":
@@ -188,6 +190,7 @@ func usage() {
   remove-graph  удалить выбранный граф
 	  rollback-graph восстановить предыдущую версию графа
 	  install-pi    установить или обновить Pi и управляемый Node.js
+	  launch        запустить установленный 1C-Consultant
   uninstall     удалить локальную установку
 
 По умолчанию используется manifest последнего GitHub Release.
@@ -199,7 +202,7 @@ func usage() {
 func menu() error {
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Управление графами\n6. Установить или обновить Pi\n7. Удалить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
+		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Управление графами\n6. Установить или обновить Pi\n7. Удалить 1C-Consultant\n8. Запустить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
 		if !in.Scan() { return in.Err() }
 		choice := strings.TrimSpace(in.Text())
 		switch choice {
@@ -213,6 +216,7 @@ func menu() error {
 		case "5": if err := graphMenu(in); err != nil { fmt.Println("Ошибка:", err) }
 		case "6": if err := installPiCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "7": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) } else { return nil }
+		case "8": if err := launchCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		default: fmt.Println("Неизвестный пункт")
 		}
 	}
@@ -265,6 +269,11 @@ func installCommand(args []string) error {
 	state, err := loadState(root); if err != nil { return err }
 	if installApp {
 		if err := installApplication(root, m, state, base, offline, log); err != nil { return err }
+	}
+	if shouldInstallPi(state, offline) {
+		if err := installPi(root, m, state, base, log); err != nil { return err }
+	} else if state.ActiveApplication != "" && state.Pi == nil && offline {
+		log.info("Pi не установлен: для первой установки Pi требуется подключение к интернету")
 	}
 	for id := range selected {
 		g, ok := graphByID(m, id); if !ok { return fmt.Errorf("граф %q отсутствует в manifest", id) }
@@ -382,6 +391,31 @@ func installPiCommand(args []string) error {
 	s, err := loadState(root); if err != nil { return err }; if s.ActiveApplication == "" { return errors.New("сначала установите 1C-Consultant") }
 	if err := installPi(root, m, s, base, log); err != nil { return err }; s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); if err := saveState(root, s); err != nil { return err }; if err := writeLauncher(root, s); err != nil { return err }
 	log.info("Pi "+m.Pi.Version+" установлен. Запуск доступен из ярлыка 1C-Consultant."); return nil
+}
+
+func launchCommand(args []string) error {
+	fs := flag.NewFlagSet("launch", flag.ContinueOnError); c := addCommon(fs, false)
+	if err := fs.Parse(args); err != nil { return err }
+	root, err := dataDir(c.dataDir); if err != nil { return err }
+	s, err := loadState(root); if err != nil { return err }
+	cmd, err := applicationCommand(root, s); if err != nil { return err }
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil { return fmt.Errorf("запуск 1C-Consultant: %w", err) }
+	return nil
+}
+
+func applicationCommand(root string, s *State) (*exec.Cmd, error) {
+	a, ok := s.Applications[s.ActiveApplication]; if !ok { return nil, errors.New("1C-Consultant не установлен") }
+	if !within(filepath.Join(root, "app"), a.Path) { return nil, errors.New("путь приложения выходит из каталога установки") }
+	exe, err := safeJoin(a.Path, a.Executable); if err != nil { return nil, err }
+	if _, err := os.Stat(exe); err != nil { return nil, fmt.Errorf("исполняемый файл приложения: %w", err) }
+	cmd := exec.Command(exe); cmd.Dir = a.Path
+	cmd.Env = append(os.Environ(), "CONSULTANT_DATA_DIR="+root, "CONSULTANT_INSTALL_ROOT="+root)
+	return cmd, nil
+}
+
+func shouldInstallPi(s *State, offline bool) bool {
+	return !offline && s.ActiveApplication != "" && s.Pi == nil
 }
 
 func installPi(root string, m Manifest, s *State, base string, log *logger) error {

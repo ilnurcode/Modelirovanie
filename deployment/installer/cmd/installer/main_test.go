@@ -120,3 +120,20 @@ func TestLauncherKeepsInstallerManagementAvailable(t *testing.T) {
 	piLauncher := filepath.Join(root, "1c-consultant-pi"); if runtime.GOOS == "windows" { piLauncher = filepath.Join(root, "1C-Consultant-Pi.cmd") }; piBody, err := os.ReadFile(piLauncher); if err != nil { t.Fatal(err) }; if !strings.Contains(string(piBody), "CONSULTANT_EXECUTABLE") || !strings.Contains(string(piBody), cli) { t.Fatal("managed Pi launcher is invalid") }
 	agentRules, err := os.ReadFile(filepath.Join(root, "AGENTS.md")); if err != nil { t.Fatal(err) }; if !strings.Contains(string(agentRules), "selected-project.txt") { t.Fatal("external interface workspace is absent") }
 }
+
+func TestMissingPiIsBootstrappedForOnlineInstall(t *testing.T) {
+	s := &State{ActiveApplication:"1"}
+	if !shouldInstallPi(s, false) { t.Fatal("missing Pi was not selected for bootstrap") }
+	if shouldInstallPi(s, true) { t.Fatal("offline install selected Pi bootstrap") }
+	s.Pi = &PiInstalled{Version:"1"}
+	if shouldInstallPi(s, false) { t.Fatal("installed Pi was selected for bootstrap") }
+}
+
+func TestApplicationCommandUsesActiveInstalledVersion(t *testing.T) {
+	root := t.TempDir(); appDir := filepath.Join(root, "app", "1"); if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }
+	exe := filepath.Join(appDir, "consultant"); if err := os.WriteFile(exe, []byte("app"), 0o755); err != nil { t.Fatal(err) }
+	s := &State{ActiveApplication:"1", Applications:map[string]Installed{"1":{Path:appDir, Executable:"consultant"}}}
+	cmd, err := applicationCommand(root, s); if err != nil { t.Fatal(err) }
+	if cmd.Path != exe || cmd.Dir != appDir { t.Fatalf("unexpected application command: path=%q dir=%q", cmd.Path, cmd.Dir) }
+	env := strings.Join(cmd.Env, "\n"); if !strings.Contains(env, "CONSULTANT_DATA_DIR="+root) || !strings.Contains(env, "CONSULTANT_INSTALL_ROOT="+root) { t.Fatal("installation environment is absent") }
+}
