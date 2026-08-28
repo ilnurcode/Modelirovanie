@@ -15,7 +15,8 @@ evidence/GAP maps, traceability, acceptance tests, incremental rebuild и пол
 телеметрией. См. [быстрый запуск](docs/quickstart.md),
 [архитектуру](docs/architecture-unified.md),
 [карту интеграции](docs/integration-map.md) и
-[происхождение компонентов](docs/provenance.md).
+[происхождение компонентов](docs/provenance.md). Полное описание installer, сервиса,
+проектного цикла и схем находится в [полном руководстве](docs/FULL_GUIDE.md).
 
 Репозиторий объединяет проверяемую базу знаний по 1С, XML-индекс локальной конфигурации и консольное приложение, которое создаёт проекты консультаций, схемы и пошаговые инструкции.
 
