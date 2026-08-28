@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	installerVersion = "0.5.2"
+	installerVersion = "0.5.3"
 	defaultManifestURL = "https://github.com/ilnurcode/Modelirovanie/releases/latest/download/manifest.json"
 )
 
@@ -35,25 +35,7 @@ type Manifest struct {
 	SchemaVersion int         `json:"schema_version"`
 	Application   Application `json:"application"`
 	Installer     Installer   `json:"installer"`
-	Pi            Pi          `json:"pi"`
 	Graphs        []Graph     `json:"graphs"`
-}
-
-type Pi struct {
-	Version       string           `json:"version"`
-	Package       string           `json:"package"`
-	NodeVersion   string           `json:"node_version"`
-	NodeArtifacts []NodeArtifact   `json:"node_artifacts"`
-}
-
-type NodeArtifact struct {
-	OS         string `json:"os"`
-	Arch       string `json:"arch"`
-	URL        string `json:"url"`
-	SHA256     string `json:"sha256"`
-	Size       int64  `json:"size,omitempty"`
-	Node       string `json:"node"`
-	NPM        string `json:"npm"`
 }
 
 type Installer struct {
@@ -104,16 +86,7 @@ type State struct {
 	Applications        map[string]Installed  `json:"applications"`
 	Installers           map[string]Installed  `json:"installers"`
 	Graphs              map[string]GraphState `json:"graphs"`
-	Pi                  *PiInstalled          `json:"pi,omitempty"`
 	UpdatedAt           string                `json:"updated_at"`
-}
-
-type PiInstalled struct {
-	Version        string `json:"version"`
-	NodeVersion    string `json:"node_version"`
-	NodeExecutable string `json:"node_executable"`
-	CLI            string `json:"cli"`
-	Installed      string `json:"installed_at"`
 }
 
 type Installed struct {
@@ -163,10 +136,6 @@ func run(args []string) error {
 		return removeGraphCommand(args[1:])
 	case "rollback-graph":
 		return rollbackGraphCommand(args[1:])
-	case "install-pi":
-		return installPiCommand(args[1:])
-	case "launch":
-		return launchCommand(args[1:])
 	case "uninstall":
 		return uninstallCommand(args[1:])
 	case "version", "--version", "-version":
@@ -189,8 +158,6 @@ func usage() {
   rollback      восстановить предыдущую версию приложения
   remove-graph  удалить выбранный граф
 	  rollback-graph восстановить предыдущую версию графа
-	  install-pi    установить или обновить Pi и управляемый Node.js
-	  launch        запустить установленный 1C-Consultant
   uninstall     удалить локальную установку
 
 По умолчанию используется manifest последнего GitHub Release.
@@ -202,7 +169,7 @@ func usage() {
 func menu() error {
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Управление графами\n6. Установить или обновить Pi\n7. Удалить 1C-Consultant\n8. Запустить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
+		fmt.Print("\n========================================\n  Установщик 1C-Consultant\n========================================\n1. Установить или обновить\n2. Показать установленные версии\n3. Проверить обновления\n4. Откатить приложение\n5. Управление графами\n6. Удалить 1C-Consultant\n0. Выход\n\nВыберите действие: ")
 		if !in.Scan() { return in.Err() }
 		choice := strings.TrimSpace(in.Text())
 		switch choice {
@@ -214,9 +181,7 @@ func menu() error {
 		case "3": if err := checkCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "4": if err := rollbackCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
 		case "5": if err := graphMenu(in); err != nil { fmt.Println("Ошибка:", err) }
-		case "6": if err := installPiCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
-		case "7": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) } else { return nil }
-		case "8": if err := launchCommand(nil); err != nil { fmt.Println("Ошибка:", err) }
+		case "6": if err := uninstallCommand(nil); err != nil { fmt.Println("Ошибка:", err) } else { return nil }
 		default: fmt.Println("Неизвестный пункт")
 		}
 	}
@@ -270,16 +235,12 @@ func installCommand(args []string) error {
 	if installApp {
 		if err := installApplication(root, m, state, base, offline, log); err != nil { return err }
 	}
-	if shouldInstallPi(state, offline) {
-		if err := installPi(root, m, state, base, log); err != nil { return err }
-	} else if state.ActiveApplication != "" && state.Pi == nil && offline {
-		log.info("Pi не установлен: для первой установки Pi требуется подключение к интернету")
-	}
 	for id := range selected {
 		g, ok := graphByID(m, id); if !ok { return fmt.Errorf("граф %q отсутствует в manifest", id) }
 		if err := installGraph(root, g, state, base, offline, log); err != nil { return err }
 	}
 	if err := installInstaller(root, m, state, base, offline, log); err != nil { return err }
+	if err := removeLegacyPi(root); err != nil { return err }
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := saveState(root, state); err != nil { return err }
 	if state.ActiveApplication != "" { if err := writeLauncher(root, state); err != nil { return err }; if err := writeOSIntegration(root, state); err != nil { return err } }
@@ -296,7 +257,6 @@ func checkCommand(args []string) error {
 	s, err := loadState(root); if err != nil { return err }
 	fmt.Printf("Приложение: установлено %s, доступно %s\n", valueOr(s.ActiveApplication, "нет"), m.Application.Version)
 	fmt.Printf("Installer: установлен %s, доступен %s\n", valueOr(s.ActiveInstaller, "нет"), m.Installer.Version)
-	localPi := "нет"; if s.Pi != nil { localPi = s.Pi.Version }; fmt.Printf("Pi: установлен %s, доступен %s\n", localPi, m.Pi.Version)
 	for _, g := range m.Graphs { local := "нет"; if x, ok := s.Graphs[g.ID]; ok { local = x.ActiveVersion }; fmt.Printf("Граф %s: установлен %s, доступен %s\n", g.ID, local, g.GraphVersion) }
 	return nil
 }
@@ -306,7 +266,7 @@ func statusCommand(args []string) error {
 	if err := fs.Parse(args); err != nil { return err }
 	root, err := dataDir(c.dataDir); if err != nil { return err }
 	s, err := loadState(root); if err != nil { return err }
-	fmt.Println("Каталог:", root); fmt.Println("Активное приложение:", valueOr(s.ActiveApplication, "не установлено")); fmt.Println("Активный installer:", valueOr(s.ActiveInstaller, "не установлен")); if s.Pi != nil { fmt.Println("Pi:", s.Pi.Version, "Node.js:", s.Pi.NodeVersion) } else { fmt.Println("Pi: не установлен") }
+	fmt.Println("Каталог:", root); fmt.Println("Активное приложение:", valueOr(s.ActiveApplication, "не установлено")); fmt.Println("Активный installer:", valueOr(s.ActiveInstaller, "не установлен"))
 	ids := make([]string, 0, len(s.Graphs)); for id := range s.Graphs { ids = append(ids, id) }; sort.Strings(ids)
 	for _, id := range ids { fmt.Printf("Граф %s: %s\n", id, s.Graphs[id].ActiveVersion) }
 	return nil
@@ -381,57 +341,6 @@ func installGraphsFromMenu(in *bufio.Scanner) error {
 	for i, g := range m.Graphs { installed := "не установлен"; if current, ok := s.Graphs[g.ID]; ok { installed = current.ActiveVersion }; fmt.Printf("[%d] %s %s — установлена %s, доступна %s\n", i+1, g.Name, g.ConfigurationVersion, installed, g.GraphVersion) }; fmt.Print("Введите номера через запятую или Enter для всех: "); if !in.Scan() { return in.Err() }
 	selected := map[string]bool{}; answer := strings.TrimSpace(in.Text()); if answer == "" { for _, g := range m.Graphs { selected[g.ID] = true } } else { for item := range csvSet(answer) { var n int; if _, err := fmt.Sscanf(item, "%d", &n); err != nil || n < 1 || n > len(m.Graphs) { return fmt.Errorf("некорректный номер %q", item) }; selected[m.Graphs[n-1].ID] = true } }
 	for id := range selected { g, _ := graphByID(m, id); if err := installGraph(root, g, s, base, offline, log); err != nil { return err } }; if err := installInstaller(root, m, s, base, offline, log); err != nil { return err }; s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); if err := saveState(root, s); err != nil { return err }; return writeLauncher(root, s)
-}
-
-func installPiCommand(args []string) error {
-	fs := flag.NewFlagSet("install-pi", flag.ContinueOnError); c := addCommon(fs, true)
-	if err := fs.Parse(args); err != nil { return err }
-	root, err := dataDir(c.dataDir); if err != nil { return err }; log, err := openLog(root); if err != nil { return err }; defer log.close()
-	m, base, offline, err := loadManifest(*c, log); if err != nil { return err }; if offline { return errors.New("установка Pi требует подключения к интернету") }
-	s, err := loadState(root); if err != nil { return err }; if s.ActiveApplication == "" { return errors.New("сначала установите 1C-Consultant") }
-	if err := installPi(root, m, s, base, log); err != nil { return err }; s.UpdatedAt = time.Now().UTC().Format(time.RFC3339); if err := saveState(root, s); err != nil { return err }; if err := writeLauncher(root, s); err != nil { return err }
-	log.info("Pi "+m.Pi.Version+" установлен. Запуск доступен из ярлыка 1C-Consultant."); return nil
-}
-
-func launchCommand(args []string) error {
-	fs := flag.NewFlagSet("launch", flag.ContinueOnError); c := addCommon(fs, false)
-	if err := fs.Parse(args); err != nil { return err }
-	root, err := dataDir(c.dataDir); if err != nil { return err }
-	s, err := loadState(root); if err != nil { return err }
-	cmd, err := applicationCommand(root, s); if err != nil { return err }
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil { return fmt.Errorf("запуск 1C-Consultant: %w", err) }
-	return nil
-}
-
-func applicationCommand(root string, s *State) (*exec.Cmd, error) {
-	a, ok := s.Applications[s.ActiveApplication]; if !ok { return nil, errors.New("1C-Consultant не установлен") }
-	if !within(filepath.Join(root, "app"), a.Path) { return nil, errors.New("путь приложения выходит из каталога установки") }
-	exe, err := safeJoin(a.Path, a.Executable); if err != nil { return nil, err }
-	if _, err := os.Stat(exe); err != nil { return nil, fmt.Errorf("исполняемый файл приложения: %w", err) }
-	cmd := exec.Command(exe); cmd.Dir = a.Path
-	cmd.Env = append(os.Environ(), "CONSULTANT_DATA_DIR="+root, "CONSULTANT_INSTALL_ROOT="+root)
-	return cmd, nil
-}
-
-func shouldInstallPi(s *State, offline bool) bool {
-	return !offline && s.ActiveApplication != "" && s.Pi == nil
-}
-
-func installPi(root string, m Manifest, s *State, base string, log *logger) error {
-	osName, arch := platform(); var artifact *NodeArtifact
-	for i := range m.Pi.NodeArtifacts { if m.Pi.NodeArtifacts[i].OS == osName && m.Pi.NodeArtifacts[i].Arch == arch { artifact = &m.Pi.NodeArtifacts[i]; break } }
-	if artifact == nil { return fmt.Errorf("Pi %s/%s не поддерживается manifest", osName, arch) }
-	nodeRoot := filepath.Join(root, "tools", "node", m.Pi.NodeVersion); node, err := safeJoin(nodeRoot, artifact.Node); if err != nil { return err }; npm, err := safeJoin(nodeRoot, artifact.NPM); if err != nil { return err }
-	if _, err := os.Stat(node); errors.Is(err, os.ErrNotExist) { if err := fetchVerifyExtract(root, artifact.URL, base, false, "node", artifact.SHA256, artifact.Size, nodeRoot, log); err != nil { return err } }
-	if !within(filepath.Join(root, "tools", "node"), node) || !within(filepath.Join(root, "tools", "node"), npm) { return errors.New("путь Node.js выходит из каталога установки") }
-	piRoot := filepath.Join(root, "tools", "pi", m.Pi.Version); if err := os.MkdirAll(piRoot, 0o755); err != nil { return err }
-	cmd := exec.Command(node, npm, "install", "--global", "--prefix", piRoot, "--ignore-scripts", "--no-audit", "--no-fund", m.Pi.Package+"@"+m.Pi.Version); cmd.Dir = root; cmd.Env = append(os.Environ(), "NPM_CONFIG_UPDATE_NOTIFIER=false")
-	out, err := cmd.CombinedOutput(); if err != nil { return fmt.Errorf("npm install Pi: %w: %s", err, strings.TrimSpace(string(out))) }
-	cli := filepath.Join(piRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"); if !within(filepath.Join(root, "tools", "pi"), cli) { return errors.New("путь Pi выходит из каталога установки") }
-	health := exec.Command(node, cli, "--version"); health.Dir = root; healthOut, err := health.CombinedOutput(); if err != nil { return fmt.Errorf("проверка Pi: %w: %s", err, strings.TrimSpace(string(healthOut))) }
-	s.Pi = &PiInstalled{Version:m.Pi.Version, NodeVersion:m.Pi.NodeVersion, NodeExecutable:node, CLI:cli, Installed:time.Now().UTC().Format(time.RFC3339)}
-	return nil
 }
 
 func uninstallCommand(args []string) error {
@@ -597,8 +506,6 @@ func validateManifest(m Manifest) error {
 	for _, a := range m.Application.Artifacts { if a.OS == "" || a.Arch == "" || a.URL == "" || a.Executable == "" || !validHash(a.SHA256) { return errors.New("manifest: неполный артефакт приложения") }; if _, err := safeJoin("root", a.Executable); err != nil { return errors.New("manifest: небезопасный путь executable") } }
 	if !safeSegment(m.Installer.Version) { return errors.New("manifest: некорректная версия installer") }
 	for _, a := range m.Installer.Artifacts { if a.OS == "" || a.Arch == "" || a.URL == "" || !safeSegment(a.Filename) || !validHash(a.SHA256) { return errors.New("manifest: неполный артефакт installer") } }
-	if !safeSegment(m.Pi.Version) || !safeSegment(m.Pi.NodeVersion) || m.Pi.Package != "@earendil-works/pi-coding-agent" { return errors.New("manifest: некорректная версия Pi") }
-	for _, a := range m.Pi.NodeArtifacts { if a.OS == "" || a.Arch == "" || a.URL == "" || a.Node == "" || a.NPM == "" || !validHash(a.SHA256) { return errors.New("manifest: неполный артефакт Node.js") }; if _, err := safeJoin("root", a.Node); err != nil { return errors.New("manifest: небезопасный путь Node.js") }; if _, err := safeJoin("root", a.NPM); err != nil { return errors.New("manifest: небезопасный путь npm") } }
 	seen := map[string]bool{}; for _, g := range m.Graphs { if !safeSegment(g.ID) || seen[g.ID] || g.URL == "" || !validHash(g.SHA256) { return fmt.Errorf("manifest: некорректный граф %q", g.ID) }; seen[g.ID] = true }
 	return nil
 }
@@ -619,24 +526,31 @@ func saveState(root string, s *State) error {
 	_ = os.Remove(backup); return nil
 }
 
+func removeLegacyPi(root string) error {
+	targets := []string{
+		filepath.Join(root, "tools", "pi"),
+		filepath.Join(root, "tools", "node"),
+		filepath.Join(root, "1C-Consultant-Pi.cmd"),
+		filepath.Join(root, "1c-consultant-pi"),
+	}
+	for _, target := range targets {
+		if !within(root, target) { return errors.New("путь устаревшего Pi выходит из каталога установки") }
+		if err := os.RemoveAll(target); err != nil { return err }
+	}
+	return nil
+}
+
 func writeLauncher(root string, s *State) error {
 	a, ok := s.Applications[s.ActiveApplication]; if !ok { return errors.New("активное приложение отсутствует") }; exe, err := safeJoin(a.Path, a.Executable); if err != nil { return err }
 	i, ok := s.Installers[s.ActiveInstaller]; if !ok { return errors.New("активный installer отсутствует") }; installer, err := safeJoin(i.Path, i.Executable); if err != nil { return err }
 	if !within(filepath.Join(root, "app"), a.Path) { return errors.New("путь приложения выходит из каталога установки") }
 	if !within(filepath.Join(root, "installer"), i.Path) { return errors.New("путь installer выходит из каталога установки") }
-	if runtime.GOOS == "windows" { piMenu, piAction := "", ""; if s.Pi != nil { piMenu = "echo 3. Запустить Pi для 1C-Consultant\r\n"; piAction = "if \"%choice%\"==\"3\" (call \""+filepath.Join(root, "1C-Consultant-Pi.cmd")+"\" & goto end)\r\n" }; body := "@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_INSTALL_ROOT="+root+"\"\r\nif not \"%~1\"==\"\" goto service\r\necho.\r\necho 1. Запустить 1C-Consultant\r\necho 2. Управление установкой и графами\r\n"+piMenu+"echo 0. Выход\r\nset /p choice=Выберите действие: \r\nif \"%choice%\"==\"2\" (\""+installer+"\" & goto end)\r\n"+piAction+"if \"%choice%\"==\"0\" goto end\r\n:service\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n:end\r\nendlocal\r\n"; if err := os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755); err != nil { return err } } else {
-		piMenu, piAction := "", ""; if s.Pi != nil { piMenu = "3. Запустить Pi для 1C-Consultant\\n"; piAction = "    3) exec "+shellQuote(filepath.Join(root, "1c-consultant-pi"))+" ;;\n" }
-		body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nif [ \"$#\" -eq 0 ]; then\n  printf '\\n1. Запустить 1C-Consultant\\n2. Управление установкой и графами\\n"+piMenu+"0. Выход\\nВыберите действие: '\n  read -r choice\n  case \"$choice\" in\n    2) exec "+shellQuote(installer)+" ;;\n"+piAction+"    0) exit 0 ;;\n  esac\nfi\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
+	if runtime.GOOS == "windows" { body := "@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_INSTALL_ROOT="+root+"\"\r\nif not \"%~1\"==\"\" goto service\r\necho.\r\necho 1. Запустить 1C-Consultant\r\necho 2. Управление установкой и графами\r\necho 0. Выход\r\nset /p choice=Выберите действие: \r\nif \"%choice%\"==\"2\" (\""+installer+"\" & goto end)\r\nif \"%choice%\"==\"0\" goto end\r\n:service\r\ncd /d \""+a.Path+"\"\r\n\""+exe+"\" %*\r\n:end\r\nendlocal\r\n"; if err := os.WriteFile(filepath.Join(root, "1C-Consultant.cmd"), []byte(body), 0o755); err != nil { return err } } else {
+		body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nif [ \"$#\" -eq 0 ]; then\n  printf '\\n1. Запустить 1C-Consultant\\n2. Управление установкой и графами\\n0. Выход\\nВыберите действие: '\n  read -r choice\n  case \"$choice\" in\n    2) exec "+shellQuote(installer)+" ;;\n    0) exit 0 ;;\n  esac\nfi\ncd "+shellQuote(a.Path)+"\nexec "+shellQuote(exe)+" \"$@\"\n"
 		if err := os.WriteFile(filepath.Join(root, "1c-consultant"), []byte(body), 0o755); err != nil { return err }; if runtime.GOOS == "darwin" { if err := os.WriteFile(filepath.Join(root, "1C-Consultant.command"), []byte(body), 0o755); err != nil { return err } }
 	}
 	if err := writeAgentWorkspace(root, exe, a.Path); err != nil { return err }
-	if s.Pi != nil { return writePiLauncher(root, s, exe, a.Path) }; return nil
-}
-
-func writePiLauncher(root string, s *State, appExecutable, appPath string) error {
-	if s.Pi == nil { return errors.New("Pi не установлен") }; if !within(filepath.Join(root, "tools", "node"), s.Pi.NodeExecutable) || !within(filepath.Join(root, "tools", "pi"), s.Pi.CLI) { return errors.New("пути Pi выходят из каталога установки") }
-	if runtime.GOOS == "windows" { body := "@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\nset \"CONSULTANT_DATA_DIR="+root+"\"\r\nset \"CONSULTANT_INSTALL_ROOT="+root+"\"\r\nset \"CONSULTANT_REPO="+appPath+"\"\r\nset \"CONSULTANT_EXECUTABLE="+appExecutable+"\"\r\ncd /d \""+appPath+"\"\r\n\""+s.Pi.NodeExecutable+"\" \""+s.Pi.CLI+"\" --approve --offline --model wormsoft-gateway/wormsoft/agent/medium --name \"NewAgent ERP\"\r\nendlocal\r\n"; return os.WriteFile(filepath.Join(root, "1C-Consultant-Pi.cmd"), []byte(body), 0o755) }
-	body := "#!/bin/sh\nexport CONSULTANT_DATA_DIR="+shellQuote(root)+"\nexport CONSULTANT_INSTALL_ROOT="+shellQuote(root)+"\nexport CONSULTANT_REPO="+shellQuote(appPath)+"\nexport CONSULTANT_EXECUTABLE="+shellQuote(appExecutable)+"\ncd "+shellQuote(appPath)+"\nexec "+shellQuote(s.Pi.NodeExecutable)+" "+shellQuote(s.Pi.CLI)+" --approve --offline --model wormsoft-gateway/wormsoft/agent/medium --name 'NewAgent ERP'\n"; return os.WriteFile(filepath.Join(root, "1c-consultant-pi"), []byte(body), 0o755)
+	return nil
 }
 
 func writeAgentWorkspace(root, appExecutable, appPath string) error {

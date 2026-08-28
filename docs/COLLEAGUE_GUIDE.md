@@ -2,14 +2,14 @@
 
 ## Что запускается
 
-Откройте NewAgent в Codex/OpenCode либо запустите `start_erp_pi.cmd`. Интерфейс
+Откройте NewAgent в Codex или OpenCode. Интерфейс
 вызывает `consultant.cmd`; Python выполняет lifecycle, hybrid graph search,
 сохранение и проверки, а смысловые этапы отправляет на Wormsoft API-роли low/medium/high.
 
 Python перед каждым API-вызовом читает координирующий скилл
 `skills/prepare-1c-consulting-answer/SKILL.md`, общую modeling policy и профильный
 скилл роли: `analyze-1c-requirements`, `design-1c-process` или
-`write-1c-user-instruction`. Pi, Codex и OpenCode не исполняют предметную генерацию
+`write-1c-user-instruction`. Codex и OpenCode не исполняют предметную генерацию
 собственными моделями.
 
 Сначала проверьте:
@@ -71,10 +71,10 @@ search, node/edge IDs и source_ref. Для каждого AI-вызова та�
 модель, входные, cached, выходные, reasoning и суммарные токены. `answers_md/`
 содержит версии инструкции и ответы на дополнительные вопросы.
 
-## Pi
+## Работа с проектом
 
-Запустите `start_erp_pi.cmd`, затем введите `/erp`. После выбора существующего
-проекта меню показывает только действия, допустимые в его текущем статусе.
+После выбора существующего проекта меню показывает только действия, допустимые в
+его текущем статусе.
 
 Для нового проекта последовательность такая:
 

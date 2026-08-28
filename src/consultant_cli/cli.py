@@ -390,7 +390,7 @@ def dispatch(app, args) -> Any:
             "api": app.agents.api_runtime_status(),
             "graph": app.workflow.graph.status(),
             "request_path": "python",
-            "interfaces": ["pi", "opencode", "codex"],
+            "interfaces": ["opencode", "codex"],
         }
     if command == "graph-status":
         return app.workflow.graph.status()

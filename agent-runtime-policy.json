@@ -26,7 +26,7 @@
   "reuse_identical_calls": true,
   "automatic_retries": 0,
   "sequential": true,
-  "interfaces_are_thin": ["pi", "opencode", "codex"],
+  "interfaces_are_thin": ["opencode", "codex"],
   "models_by_agent": {
     "erp-translator": "wormsoft/agent/low",
     "erp-process-planner": "wormsoft/agent/medium",

@@ -32,17 +32,6 @@ class ExternalInterfaceTest(unittest.TestCase):
             command = open_external_agent(self.app(root), "demo", "opencode")
         self.assertEqual(["C:/opencode.exe", str(root)], command)
 
-    def test_pi_is_detected_from_managed_install(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "app" / "4.2.1"
-            root.mkdir(parents=True)
-            app = self.app(root)
-            launcher = app.paths.data_root / (
-                "1C-Consultant-Pi.cmd" if __import__("os").name == "nt" else "1c-consultant-pi"
-            )
-            launcher.write_text("launcher", encoding="utf-8")
-            self.assertTrue(interface_available(app, "pi"))
-
     @patch("consultant_cli.console.subprocess.run")
     @patch("consultant_cli.console.shutil.which", return_value="C:/opencode.exe")
     def test_launch_passes_selected_project_and_data_root(self, _which, run):

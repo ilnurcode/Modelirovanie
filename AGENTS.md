@@ -2,7 +2,7 @@
 
 ## Основной runtime
 
-Codex, OpenCode и Pi — только интерфейсы. Канонический request path:
+Codex и OpenCode — только интерфейсы. Канонический request path:
 
 `интерфейс → consultant.cmd/consultant.ps1 → Python workflow → Python hybrid graph search → Wormsoft API roles`.
 

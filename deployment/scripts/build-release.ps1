@@ -49,9 +49,6 @@ if ($GraphDatabaseSha256) {
 $package = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "PACKAGE_MANIFEST.json") | ConvertFrom-Json
 $version = [string]$package.application_version
 $installerVersion = [string]$package.installer_version
-$piVersion = [string]$package.pi_version
-$piPackage = [string]$package.pi_package
-$nodeVersion = [string]$package.node_version
 $configurationVersion = [string]$package.configuration_pack.release
 $graphVersion = [string]$package.configuration_pack.graph_version
 if (-not $graphVersion) { $graphVersion = $version }
@@ -77,15 +74,6 @@ foreach ($platform in $expected) {
         health_check_args = @("--version")
     }
 }
-
-$nodeBaseUrl = "https://nodejs.org/download/release/v$nodeVersion"
-$nodeArtifacts = @(
-    [ordered]@{ os = "windows"; arch = "x64"; url = "$nodeBaseUrl/node-v$nodeVersion-win-x64.zip"; sha256 = "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97"; node = "node-v$nodeVersion-win-x64/node.exe"; npm = "node-v$nodeVersion-win-x64/node_modules/npm/bin/npm-cli.js" },
-    [ordered]@{ os = "linux"; arch = "x64"; url = "$nodeBaseUrl/node-v$nodeVersion-linux-x64.tar.gz"; sha256 = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"; node = "node-v$nodeVersion-linux-x64/bin/node"; npm = "node-v$nodeVersion-linux-x64/lib/node_modules/npm/bin/npm-cli.js" },
-    [ordered]@{ os = "linux"; arch = "arm64"; url = "$nodeBaseUrl/node-v$nodeVersion-linux-arm64.tar.gz"; sha256 = "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30"; node = "node-v$nodeVersion-linux-arm64/bin/node"; npm = "node-v$nodeVersion-linux-arm64/lib/node_modules/npm/bin/npm-cli.js" },
-    [ordered]@{ os = "macos"; arch = "x64"; url = "$nodeBaseUrl/node-v$nodeVersion-darwin-x64.tar.gz"; sha256 = "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026"; node = "node-v$nodeVersion-darwin-x64/bin/node"; npm = "node-v$nodeVersion-darwin-x64/lib/node_modules/npm/bin/npm-cli.js" },
-    [ordered]@{ os = "macos"; arch = "arm64"; url = "$nodeBaseUrl/node-v$nodeVersion-darwin-arm64.tar.gz"; sha256 = "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6"; node = "node-v$nodeVersion-darwin-arm64/bin/node"; npm = "node-v$nodeVersion-darwin-arm64/lib/node_modules/npm/bin/npm-cli.js" }
-)
 
 $installerArtifacts = @()
 $installerNames = [ordered]@{
@@ -131,7 +119,6 @@ $manifest = [ordered]@{
     schema_version = 1
     application = [ordered]@{ version = $version; artifacts = $artifacts }
     installer = [ordered]@{ version = $installerVersion; artifacts = $installerArtifacts }
-    pi = [ordered]@{ version = $piVersion; package = $piPackage; node_version = $nodeVersion; node_artifacts = $nodeArtifacts }
     graphs = @([ordered]@{
         id = "erp-$configurationVersion"
         name = "1С:ERP Управление предприятием 2"

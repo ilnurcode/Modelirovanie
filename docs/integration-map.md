@@ -7,14 +7,14 @@
 | Поиск | локальные статьи/Modeler index | L1-L4, FTS5, semantic, rerank, typed edges | прямой Python read-only SQLite reader |
 | Доказательства | schema/validation/Modeler | source_ref и L3↔L4 evidence | оба вида проверок, без повышения candidate |
 | LLM | OpenAI-compatible adapter | Wormsoft policy low/medium/high | фиксированные роли через существующий ключ |
-| Интерфейс | terminal/menu | Herdr/Pi buttons | Pi, Codex, OpenCode поверх одного CLI |
+| Интерфейс | terminal/menu | CLI | Codex и OpenCode поверх одного CLI |
 | Ответ | пошаговая инструкция | верхняя цепочка документов и ветви | document_flow первым блоком + 3 deliverables |
 
 ## Канонический поток
 
 ```mermaid
 flowchart TD
-    I[Pi / Codex / OpenCode] --> C[consultant.cmd]
+    I[Codex / OpenCode] --> C[consultant.cmd]
     C --> P[Preflight Python, 0 LLM]
     P --> G[(Graph Яны read-only)]
     P --> M[Modeler Кирилла]

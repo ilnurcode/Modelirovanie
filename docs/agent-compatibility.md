@@ -5,7 +5,6 @@
 
 | Интерфейс | Адаптер | Расход предметной генерации |
 |---|---|---|
-| Pi/Herdr | `.pi/extensions/newagent-workspace.ts`, `/erp` | Wormsoft API key |
 | Codex | `AGENTS.md`, `.codex/config.toml` | Wormsoft API key через Python |
 | OpenCode | `AGENTS.md` и CLI | Wormsoft API key через Python |
 | Терминал | `consultant.cmd` | Wormsoft API key |

@@ -20,7 +20,6 @@ INTERFACES = {
     "codex": "Codex Desktop",
     "opencode": "OpenCode",
     "claude": "Claude Code",
-    "pi": "Pi",
 }
 
 
@@ -107,7 +106,7 @@ def run_menu(app: Application) -> int:
                 ("1", "Новый проект", "Мастер создания инструкции и схемы"),
                 ("2", "Мои проекты", "Выбрать существующий проект"),
                 ("3", "Подключить AI", "Настроить способ генерации"),
-                ("4", "Выбрать интерфейс", "Программа, Codex, OpenCode, Claude или Pi"),
+                ("4", "Выбрать интерфейс", "Программа, Codex, OpenCode или Claude"),
                 ("5", "Система и справка", "База знаний, проверка и помощь"),
                 ("0", "Выход", "Закрыть приложение"),
             ]
@@ -894,22 +893,14 @@ def open_external_agent(
         else app.paths.root
     )
     command_name = {"codex": "codex", "claude": "claude", "opencode": "opencode"}.get(agent)
-    if agent == "pi":
-        launcher = app.paths.data_root / (
-            "1C-Consultant-Pi.cmd" if os.name == "nt" else "1c-consultant-pi"
-        )
-        command = ["cmd.exe", "/c", str(launcher)] if os.name == "nt" else [str(launcher)]
-        executable = str(launcher) if launcher.is_file() else ""
-    else:
-        executable = shutil.which(command_name or "") or ""
-        command = [executable or command_name or agent]
-        if agent == "codex":
-            command.extend(["app", str(workspace)])
-        elif agent == "opencode":
-            command.append(str(workspace))
+    executable = shutil.which(command_name or "") or ""
+    command = [executable or command_name or agent]
+    if agent == "codex":
+        command.extend(["app", str(workspace)])
+    elif agent == "opencode":
+        command.append(str(workspace))
     if not command_name:
-        if agent != "pi":
-            raise ValueError(f"Неизвестный агент: {agent}")
+        raise ValueError(f"Неизвестный агент: {agent}")
     if launch:
         if not executable:
             raise FileNotFoundError(f"{INTERFACES[agent]} не найден. Сначала установите его.")
@@ -928,8 +919,5 @@ def open_external_agent(
 
 
 def interface_available(app: Application, agent: str) -> bool:
-    if agent == "pi":
-        name = "1C-Consultant-Pi.cmd" if os.name == "nt" else "1c-consultant-pi"
-        return (app.paths.data_root / name).is_file()
     command_name = {"codex": "codex", "claude": "claude", "opencode": "opencode"}.get(agent)
     return bool(command_name and shutil.which(command_name))

@@ -13,6 +13,12 @@ from consultant_cli.infrastructure.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_removed_pi_interface_falls_back_to_builtin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "consultant.local.toml"
+            path.write_text('preferred_interface = "pi"\n', encoding="utf-8")
+            self.assertEqual("builtin", load_settings(path).preferred_interface)
+
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "consultant.local.toml"

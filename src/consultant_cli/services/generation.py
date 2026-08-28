@@ -674,7 +674,7 @@ class PromptBuilder:
 
 Верните ТОЛЬКО JSON-объект по переданной JSON Schema, без Markdown-обёртки.
 artifact_type обязан быть: {stage}.
-Внешняя роль: {role}. Модель выбирает приложение, а не интерфейс Codex/OpenCode/Pi.
+Внешняя роль: {role}. Модель выбирает приложение, а не интерфейс Codex/OpenCode.
 
 {mode_rules}
 {expected}

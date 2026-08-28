@@ -64,9 +64,12 @@ def load_settings(path: Path) -> AppSettings:
         name: AgentProfile.from_dict(name, values)
         for name, values in data.get("agents", {}).items()
     }
+    preferred_interface = str(data.get("preferred_interface", "builtin"))
+    if preferred_interface == "pi":
+        preferred_interface = "builtin"
     return AppSettings(
         default_agent=str(data.get("default_agent", "")),
-        preferred_interface=str(data.get("preferred_interface", "builtin")),
+        preferred_interface=preferred_interface,
         results_dir=str(data.get("results_dir", "results")),
         default_output=[str(item) for item in data.get("default_output", [])],
         mask_sensitive_data=bool(privacy.get("mask_sensitive_data", True)),

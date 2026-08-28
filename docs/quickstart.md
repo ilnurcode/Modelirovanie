@@ -52,7 +52,6 @@ consultant.cmd --repo . ask demo "Подготовь сценарий" --kind va
 ## Интерфейсы
 
 - Codex/OpenCode: открыть корень и работать через команды из `AGENTS.md`.
-- Herdr/Pi: запустить `start_erp_pi.cmd`, затем `/erp`.
 - Терминал: `consultant.cmd` без параметров открывает меню.
 
 ## Проверки

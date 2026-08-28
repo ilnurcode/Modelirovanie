@@ -8,7 +8,7 @@ revisions и независимый Modeler Кирилла.
 
 ```mermaid
 flowchart LR
-    UI[Pi / OpenCode / Codex] --> CLI[consultant.cmd]
+    UI[OpenCode / Codex] --> CLI[consultant.cmd]
     CLI --> WF[Python workflow]
     WF --> PRE[Preflight без LLM]
     PRE --> G[(4-layer SQLite graph)]
@@ -73,5 +73,4 @@ successful возможен только после отдельного фин�
 ## Интерфейсы
 
 `.codex/config.toml` не запускает MCP. Codex и OpenCode читают `AGENTS.md` и
-вызывают Python CLI. Pi использует `.pi/extensions/newagent-workspace.ts` и команду
-`/erp`; кнопки вызывают тот же CLI. Секрет остаётся только в окружении процесса.
+вызывают Python CLI. Секрет остаётся только в окружении процесса.

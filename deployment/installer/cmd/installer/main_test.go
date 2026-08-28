@@ -112,28 +112,18 @@ func TestGraphRollbackAndRemovalTrackAllVersions(t *testing.T) {
 }
 
 func TestLauncherKeepsInstallerManagementAvailable(t *testing.T) {
-	root := t.TempDir(); appDir := filepath.Join(root, "app", "1"); installerDir := filepath.Join(root, "installer", "1"); node := filepath.Join(root, "tools", "node", "1", "node"); cli := filepath.Join(root, "tools", "pi", "1", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"); if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(installerDir, 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(filepath.Dir(node), 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(filepath.Dir(cli), 0o755); err != nil { t.Fatal(err) }
+	root := t.TempDir(); appDir := filepath.Join(root, "app", "1"); installerDir := filepath.Join(root, "installer", "1"); if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }; if err := os.MkdirAll(installerDir, 0o755); err != nil { t.Fatal(err) }
 	appName, installerName := "consultant", "installer"; launcherName := "1c-consultant"; if runtime.GOOS == "windows" { appName += ".exe"; installerName += ".exe"; launcherName = "1C-Consultant.cmd" }
-	if err := os.WriteFile(filepath.Join(appDir, appName), []byte("app"), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(appDir, "AGENTS.md"), []byte("service rules\n"), 0o644); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(installerDir, installerName), []byte("installer"), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(node, []byte("node"), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(cli, []byte("pi"), 0o644); err != nil { t.Fatal(err) }
-	s := &State{ActiveApplication:"1", ActiveInstaller:"1", Applications:map[string]Installed{"1":{Path:appDir, Executable:appName}}, Installers:map[string]Installed{"1":{Path:installerDir, Executable:installerName}}, Pi:&PiInstalled{Version:"1", NodeExecutable:node, CLI:cli}}
-	if err := writeLauncher(root, s); err != nil { t.Fatal(err) }; body, err := os.ReadFile(filepath.Join(root, launcherName)); if err != nil { t.Fatal(err) }; text := string(body); if !strings.Contains(text, "CONSULTANT_INSTALL_ROOT") || !strings.Contains(text, installerName) { t.Fatal("management installer is absent from launcher") }; if !strings.Contains(text, "Pi") { t.Fatal("Pi launcher is absent from menu") }
-	piLauncher := filepath.Join(root, "1c-consultant-pi"); if runtime.GOOS == "windows" { piLauncher = filepath.Join(root, "1C-Consultant-Pi.cmd") }; piBody, err := os.ReadFile(piLauncher); if err != nil { t.Fatal(err) }; if !strings.Contains(string(piBody), "CONSULTANT_EXECUTABLE") || !strings.Contains(string(piBody), cli) { t.Fatal("managed Pi launcher is invalid") }
+	if err := os.WriteFile(filepath.Join(appDir, appName), []byte("app"), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(appDir, "AGENTS.md"), []byte("service rules\n"), 0o644); err != nil { t.Fatal(err) }; if err := os.WriteFile(filepath.Join(installerDir, installerName), []byte("installer"), 0o755); err != nil { t.Fatal(err) }
+	s := &State{ActiveApplication:"1", ActiveInstaller:"1", Applications:map[string]Installed{"1":{Path:appDir, Executable:appName}}, Installers:map[string]Installed{"1":{Path:installerDir, Executable:installerName}}}
+	if err := writeLauncher(root, s); err != nil { t.Fatal(err) }; body, err := os.ReadFile(filepath.Join(root, launcherName)); if err != nil { t.Fatal(err) }; text := string(body); if !strings.Contains(text, "CONSULTANT_INSTALL_ROOT") || !strings.Contains(text, installerName) { t.Fatal("management installer is absent from launcher") }
 	agentRules, err := os.ReadFile(filepath.Join(root, "AGENTS.md")); if err != nil { t.Fatal(err) }; if !strings.Contains(string(agentRules), "selected-project.txt") { t.Fatal("external interface workspace is absent") }
 }
 
-func TestMissingPiIsBootstrappedForOnlineInstall(t *testing.T) {
-	s := &State{ActiveApplication:"1"}
-	if !shouldInstallPi(s, false) { t.Fatal("missing Pi was not selected for bootstrap") }
-	if shouldInstallPi(s, true) { t.Fatal("offline install selected Pi bootstrap") }
-	s.Pi = &PiInstalled{Version:"1"}
-	if shouldInstallPi(s, false) { t.Fatal("installed Pi was selected for bootstrap") }
-}
-
-func TestApplicationCommandUsesActiveInstalledVersion(t *testing.T) {
-	root := t.TempDir(); appDir := filepath.Join(root, "app", "1"); if err := os.MkdirAll(appDir, 0o755); err != nil { t.Fatal(err) }
-	exe := filepath.Join(appDir, "consultant"); if err := os.WriteFile(exe, []byte("app"), 0o755); err != nil { t.Fatal(err) }
-	s := &State{ActiveApplication:"1", Applications:map[string]Installed{"1":{Path:appDir, Executable:"consultant"}}}
-	cmd, err := applicationCommand(root, s); if err != nil { t.Fatal(err) }
-	if cmd.Path != exe || cmd.Dir != appDir { t.Fatalf("unexpected application command: path=%q dir=%q", cmd.Path, cmd.Dir) }
-	env := strings.Join(cmd.Env, "\n"); if !strings.Contains(env, "CONSULTANT_DATA_DIR="+root) || !strings.Contains(env, "CONSULTANT_INSTALL_ROOT="+root) { t.Fatal("installation environment is absent") }
+func TestRemoveLegacyPiKeepsApplication(t *testing.T) {
+	root := t.TempDir(); app := filepath.Join(root, "app", "1", "consultant"); pi := filepath.Join(root, "tools", "pi", "1", "cli.js"); node := filepath.Join(root, "tools", "node", "1", "node"); launcher := filepath.Join(root, "1C-Consultant-Pi.cmd")
+	for _, path := range []string{app, pi, node, launcher} { if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { t.Fatal(err) }; if err := os.WriteFile(path, []byte("test"), 0o644); err != nil { t.Fatal(err) } }
+	if err := removeLegacyPi(root); err != nil { t.Fatal(err) }
+	for _, path := range []string{filepath.Join(root, "tools", "pi"), filepath.Join(root, "tools", "node"), launcher} { if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) { t.Fatalf("legacy Pi path was not removed: %s", path) } }
+	if _, err := os.Stat(app); err != nil { t.Fatal("application was removed") }
 }
